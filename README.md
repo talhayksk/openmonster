@@ -58,6 +58,16 @@ Paket; `/usr/bin/openmonster`, `/usr/bin/monsterctl`, uygulama menü kaydı,
 ikonlar, modprobe/modules-load yapılandırması ve isteğe bağlı fan profili
 systemd servisini kurar.
 
+AUR paket dosyaları [`packaging/aur`](packaging/aur) altında hazır. AUR'da
+yayınlandıktan sonra:
+
+```bash
+yay -S openmonster        # veya paru -S openmonster
+```
+
+Yayınlama adımları (AUR + Flathub değerlendirmesi) için
+[`docs/PUBLISHING.md`](docs/PUBLISHING.md) dosyasına bakın.
+
 ### Kaynaktan
 
 ```bash
@@ -143,6 +153,13 @@ monsterctl helper                     # GUI root yardımcısı (doğrudan kullan
 
 Betik, kaynak arşivini oluşturur, `makepkg` ile
 `openmonster-<sürüm>-<rel>-x86_64.pkg.tar.zst` üretir ve `dist/` altına kopyalar.
+
+AUR paketini yerelde denemek için:
+
+```bash
+cd packaging/aur
+makepkg -si
+```
 
 ## Yol haritası
 

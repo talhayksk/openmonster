@@ -1,0 +1,21 @@
+pkgbase = openmonster
+	pkgdesc = Monster/Uniwill laptop control center for Linux: fan, RGB, battery and power limits
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/talhayksk/openmonster
+	install = openmonster.install
+	arch = x86_64
+	license = GPL-3.0-or-later
+	makedepends = gcc
+	makedepends = make
+	depends = python
+	depends = python-pyqt6
+	optdepends = acpi_call: EC fan ve batarya kontrolu icin gerekli
+	optdepends = nvidia-utils: NVIDIA GPU sicaklik/yuk/guc bilgisi
+	optdepends = pacman-contrib: paket onbellegi temizligi (paccache)
+	backup = etc/modprobe.d/monster-ctrl.conf
+	backup = etc/modules-load.d/monster-ctrl.load
+	source = openmonster-1.0.0.tar.gz::https://github.com/talhayksk/openmonster/archive/refs/tags/v1.0.0.tar.gz
+	sha256sums = d3f424324758576925c60b503607fc5494613ae25230f1adef147d103291b447
+
+pkgname = openmonster
