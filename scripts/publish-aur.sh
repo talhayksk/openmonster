@@ -28,7 +28,10 @@ fi
 
 if [ -d "$WORK/.git" ]; then
     echo "==> Mevcut AUR calisma kopyasi guncelleniyor"
-    git -C "$WORK" pull --ff-only
+    git -C "$WORK" fetch origin || true
+    if git -C "$WORK" rev-parse --verify -q origin/master >/dev/null 2>&1; then
+        git -C "$WORK" rebase origin/master
+    fi
 else
     echo "==> AUR deposu klonlaniyor"
     mkdir -p "$(dirname "$WORK")"
@@ -42,13 +45,11 @@ cp "$SRC_DIR/PKGBUILD" "$SRC_DIR/.SRCINFO" "$SRC_DIR/openmonster.install" "$WORK
 
 cd "$WORK"
 git add PKGBUILD .SRCINFO openmonster.install
-if git diff --cached --quiet; then
-    echo "==> Degisiklik yok; AUR zaten guncel."
-    exit 0
+if ! git diff --cached --quiet; then
+    VERSION="$(sed -n 's/^pkgver=//p' PKGBUILD)"
+    REL="$(sed -n 's/^pkgrel=//p' PKGBUILD)"
+    git commit -m "upgpkg: $PKG $VERSION-$REL"
 fi
 
-VERSION="$(sed -n 's/^pkgver=//p' PKGBUILD)"
-REL="$(sed -n 's/^pkgrel=//p' PKGBUILD)"
-git commit -m "upgpkg: $PKG $VERSION-$REL"
-git push
+git push -u origin HEAD:master
 echo "==> AUR guncellendi: https://aur.archlinux.org/packages/$PKG"
