@@ -1,0 +1,54 @@
+name: Linux packages
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build .deb
+        run: ./scripts/build-deb.sh
+
+      - name: Build .rpm
+        run: ./scripts/build-rpm.sh
+
+      - name: Build portable tarball
+        run: ./scripts/build-portable.sh
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum \
+            openmonster_*.deb \
+            openmonster-*.rpm \
+            openmonster-*portable*.tar.gz \
+            > SHA256SUMS-linux
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmonster-linux-packages
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*portable*.tar.gz
+            dist/SHA256SUMS-linux
+
+      - name: Attach packages to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*portable*.tar.gz
+            dist/SHA256SUMS-linux

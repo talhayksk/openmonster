@@ -9,7 +9,7 @@ Fan eğrisi · klavye RGB · batarya limiti · CPU güç limitleri · sistem tem
 <p align="center">
   <img alt="sürüm" src="https://img.shields.io/badge/sürüm-1.0.0-4f8cff">
   <img alt="lisans" src="https://img.shields.io/badge/lisans-GPL--3.0--or--later-34d399">
-  <img alt="platform" src="https://img.shields.io/badge/platform-Arch%20Linux-1793d1">
+  <img alt="platform" src="https://img.shields.io/badge/platform-Linux-4f8cff">
 </p>
 
 OpenMonster, Monster/Abra (Uniwill/Tongfang ODM) laptopları Linux'ta yönetmek için
@@ -47,26 +47,65 @@ yazılmış açık kaynak bir kontrol merkezidir. Gerçek donanım (EC/BIOS) üz
 
 ## Kurulum
 
-### Arch Linux / CachyOS (hazır paket)
+Hazır paketler [GitHub Releases](https://github.com/talhayksk/openmonster/releases/latest)
+sayfasında. Paketler; `/usr/bin/openmonster`, `/usr/bin/monsterctl`, uygulama menü
+kaydı, ikonlar, modprobe/modules-load yapılandırması ve isteğe bağlı fan profili
+systemd servisini kurar.
+
+### Arch Linux / CachyOS (pacman)
 
 ```bash
 sudo pacman -U openmonster-1.0.0-1-x86_64.pkg.tar.zst
 openmonster
 ```
 
-Paket; `/usr/bin/openmonster`, `/usr/bin/monsterctl`, uygulama menü kaydı,
-ikonlar, modprobe/modules-load yapılandırması ve isteğe bağlı fan profili
-systemd servisini kurar.
-
-AUR paket dosyaları [`packaging/aur`](packaging/aur) altında hazır. AUR'da
-yayınlandıktan sonra:
+AUR paket dosyaları [`packaging/aur`](packaging/aur) altında hazır. AUR hesap
+kaydı yeniden açıldığında paket AUR'a gönderilecek:
 
 ```bash
 yay -S openmonster        # veya paru -S openmonster
 ```
 
-Yayınlama adımları (AUR + Flathub değerlendirmesi) için
-[`docs/PUBLISHING.md`](docs/PUBLISHING.md) dosyasına bakın.
+### Debian / Ubuntu (.deb)
+
+```bash
+sudo apt install ./openmonster_1.0.0-1_amd64.deb
+openmonster
+```
+
+Debian 12 ve Ubuntu 24.04 üzerinde test edildi. Eski `apt` sürümlerinde:
+
+```bash
+sudo dpkg -i openmonster_1.0.0-1_amd64.deb
+sudo apt -f install
+```
+
+### Fedora / RPM tabanlı dağıtımlar (.rpm)
+
+```bash
+sudo dnf install ./openmonster-1.0.0-1.fc41.x86_64.rpm
+openmonster
+```
+
+Fedora 41 üzerinde test edildi. `acpi_call` ve NVIDIA sürücüsü Fedora'da
+genellikle RPM Fusion'dan gelir; paket bunları yalnızca önerir, zorunlu tutmaz.
+
+### Diğer dağıtımlar (portable arşiv)
+
+```bash
+tar -xzf openmonster-1.0.0-portable-x86_64.tar.gz
+cd openmonster-1.0.0-portable
+sudo ./install.sh
+openmonster
+```
+
+Portable arşiv, C yardımcısını statik olarak içerir; Python 3 + PyQt6, PolicyKit
+(`pkexec`), `kmod` ve `systemd` sistemde bulunmalıdır. Kaldırmak için aynı
+dizinde:
+
+```bash
+sudo ./uninstall.sh
+```
 
 ### Kaynaktan
 
@@ -83,11 +122,19 @@ için `PREFIX` ve `DESTDIR` kullanılabilir.
 
 ### Gereksinimler
 
-- Python 3 + PyQt6 (`python-pyqt6`)
+- Python 3 + PyQt6
 - `acpi_call` çekirdek modülü (fan/batarya EC erişimi)
 - `uniwill-laptop` çekirdek modülü (`force=1`)
-- NVIDIA istatistikleri için `nvidia-utils` (isteğe bağlı)
-- Paket önbelleği temizliği için `pacman-contrib` (isteğe bağlı)
+- NVIDIA istatistikleri için NVIDIA sürücüsü (isteğe bağlı)
+- Paket önbelleği temizliği için dağıtımın paket yöneticisi araçları (isteğe bağlı)
+
+Dağıtıma göre paket adları:
+
+| Dağıtım | PyQt6 | acpi_call | NVIDIA |
+|---|---|---|---|
+| Arch / CachyOS | `python-pyqt6` | `acpi_call` | `nvidia-utils` |
+| Debian / Ubuntu | `python3-pyqt6` | `acpi-call-dkms` | `nvidia-driver` |
+| Fedora | `python3-pyqt6` | `akmod-acpi_call` (RPM Fusion) | `akmod-nvidia` (RPM Fusion) |
 
 Fan profili servisi (boot'ta sıcaklık eğrisine göre fan sürer):
 
@@ -149,10 +196,14 @@ monsterctl helper                     # GUI root yardımcısı (doğrudan kullan
 
 ```bash
 ./scripts/build-package.sh          # Arch paketi + sha256
+./scripts/build-deb.sh              # Debian/Ubuntu .deb
+./scripts/build-rpm.sh              # Fedora .rpm
+./scripts/build-portable.sh         # Tüm dağıtımlar için portable tar.gz
 ```
 
-Betik, kaynak arşivini oluşturur, `makepkg` ile
-`openmonster-<sürüm>-<rel>-x86_64.pkg.tar.zst` üretir ve `dist/` altına kopyalar.
+`.deb`, `.rpm` ve portable arşiv, hedef dağıtımın konteynerinde derlenir
+(`debian:12`, `fedora:41`); böylece C yardımcısı eski glibc sürümleriyle uyumlu
+kalır. Gereksinim: `podman` veya `docker`. Çıktılar `dist/` altına yazılır.
 
 AUR paketini yerelde denemek için:
 
@@ -160,6 +211,10 @@ AUR paketini yerelde denemek için:
 cd packaging/aur
 makepkg -si
 ```
+
+Sürüm etiketi yayınlandığında `.github/workflows/packages.yml` üç paketi
+otomatik derleyip release'e ekler. Manuel çalıştırma için GitHub Actions
+üzerinden **Linux packages → Run workflow** kullanılabilir.
 
 ## Yol haritası
 

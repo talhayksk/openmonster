@@ -1,15 +1,22 @@
 # Yayınlama rehberi
 
-Bu proje için iki farklı dağıtım kanalı var:
+Bu proje için farklı dağıtım kanalları var:
 
 | Kanal | Durum | Not |
 |---|---|---|
-| **AUR** | ✅ Hazır | `packaging/aur/` altındaki dosyalar doğrudan gönderilebilir. |
+| **AUR** | ⏳ Hazır, hesap bekliyor | `packaging/aur/` hazır; AUR yeni hesap kaydı geçici olarak kapalı. |
+| **Debian / Ubuntu** | ✅ Hazır | `.deb`, Debian 12 ve Ubuntu 24.04 üzerinde test edildi. |
+| **Fedora** | ✅ Hazır | `.rpm`, Fedora 41 üzerinde test edildi. |
+| **Portable** | ✅ Hazır | Statik C yardımcısı + `install.sh`; tüm dağıtımlarda Python/PyQt6 ile çalışır. |
 | **Flathub** | ⚠️ Uygun değil | Flatpak sandbox'ı EC/ACPI, `modprobe`, systemd ve root yardımcısı ile uyumlu değil. |
 
 ---
 
 ## 1. AUR (Arch User Repository)
+
+> **Durum (Ekim 2026):** AUR yeni hesap kaydı geçici olarak kapalı
+> (`New account registration is temporarily closed`). Paket dosyaları ve push
+> script'i hazır; kayıt yeniden açılınca aşağıdaki adımlar uygulanacak.
 
 ### Neden AUR?
 
@@ -107,7 +114,72 @@ Script, AUR SSH erişimi yoksa hiçbir şey yapmadan uyarı verir.
 
 ---
 
-## 2. Flathub
+## 2. Debian / Ubuntu (.deb)
+
+Paket, `debian:12` konteynerinde derlenir. C yardımcısı da konteynerde
+derlendiği için host'taki yeni glibc'ye bağımlı kalmaz.
+
+```bash
+./scripts/build-deb.sh
+# dist/openmonster_1.0.0-1_amd64.deb
+```
+
+Kurulum:
+
+```bash
+sudo apt install ./openmonster_1.0.0-1_amd64.deb
+openmonster
+```
+
+Bağımlılıklar: `python3`, `python3-pyqt6`, `policykit-1 | pkexec`, `kmod`,
+`systemd`. Önerilenler: `acpi-call-dkms`, `nvidia-driver`.
+
+Debian paket dosyaları [`packaging/debian`](../packaging/debian) altında.
+
+## 3. Fedora / RPM (.rpm)
+
+Paket, `fedora:41` konteynerinde `rpmbuild` ile derlenir.
+
+```bash
+./scripts/build-rpm.sh
+# dist/openmonster-1.0.0-1.fc41.x86_64.rpm
+```
+
+Kurulum:
+
+```bash
+sudo dnf install ./openmonster-1.0.0-1.fc41.x86_64.rpm
+openmonster
+```
+
+Bağımlılıklar: `python3`, `python3-pyqt6`, `polkit`, `kmod`, `systemd`.
+Önerilenler: `akmod-acpi_call`, `akmod-nvidia` (RPM Fusion).
+
+RPM spec dosyası [`packaging/rpm/openmonster.spec`](../packaging/rpm/openmonster.spec)
+altında.
+
+## 4. Portable arşiv (tüm dağıtımlar)
+
+Python 3 + PyQt6, PolicyKit, `kmod` ve `systemd` bulunan her x86_64 Linux
+dağıtımında çalışır. C yardımcısı statik derlenir.
+
+```bash
+./scripts/build-portable.sh
+# dist/openmonster-1.0.0-portable-x86_64.tar.gz
+```
+
+Kurulum/kaldırma:
+
+```bash
+tar -xzf openmonster-1.0.0-portable-x86_64.tar.gz
+cd openmonster-1.0.0-portable
+sudo ./install.sh
+# kaldırmak için: sudo ./uninstall.sh
+```
+
+Portable dosyaları [`packaging/portable`](../packaging/portable) altında.
+
+## 5. Flathub
 
 ### Kısa cevap: bu uygulama için Flathub uygun değil
 
@@ -174,3 +246,26 @@ Ayrı bir **"OpenMonster Monitor"** uygulaması yayınlamak:
 
 Böyle bir sürüm istenirse ayrı bir manifest ve ayrı bir uygulama kimliği ile
 hazırlanabilir.
+
+---
+
+## 6. GitHub Releases ve otomatik paketleme
+
+`.github/workflows/packages.yml` üç işi yapar:
+
+1. `workflow_dispatch` ile manuel veya yeni bir release yayınlandığında çalışır.
+2. `.deb`, `.rpm` ve portable arşivi Docker konteynerlerinde derler.
+3. `SHA256SUMS-linux` üretir; workflow artifact'i olarak yükler ve release
+   yayınıysa GitHub release'ine ekler.
+
+Yerel olarak aynı çıktıları üretmek için:
+
+```bash
+./scripts/build-deb.sh
+./scripts/build-rpm.sh
+./scripts/build-portable.sh
+sha256sum dist/openmonster_*.deb dist/openmonster-*.rpm \
+  dist/openmonster-*portable*.tar.gz > dist/SHA256SUMS-linux
+```
+
+Arch paketi `./scripts/build-package.sh` ile ayrıca üretilir.
