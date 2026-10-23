@@ -1,0 +1,13 @@
+# derleme ciktilari
+/monsterctl
+/pkg/
+/dist/
+/src/*.o
+
+# python
+__pycache__/
+*.py[cod]
+
+# paket artefaktlari
+*.pkg.tar.*
+*.tar.gz

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=OpenMonster
+GenericName=Laptop Control Center
+Comment=Monster/Uniwill fan, RGB, battery and power controls
+Exec=openmonster %U
+Icon=openmonster
+Terminal=false
+Categories=System;Settings;HardwareSettings;
+Keywords=fan;rgb;battery;monster;uniwill;power;control;
+StartupNotify=true
+StartupWMClass=openmonster

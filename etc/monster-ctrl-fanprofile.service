@@ -1,0 +1,20 @@
+# monster-ctrl otomatik fan profili servisi (M4)
+# Kurulum: sudo make install  &&  sudo systemctl enable --now monster-ctrl-fanprofile
+# OEM otomatik moda donus: sudo systemctl disable --now monster-ctrl-fanprofile && sudo monsterctl fan auto
+[Unit]
+Description=monster-ctl otomatik fan profili (sicaklik bazli fan egrisi)
+Documentation=https://github.com/talhayksk/openmonster
+After=multi-user.target
+# acpi_call modulu yuklenmeden baslamasin
+Requires=systemd-modules-load.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'i=0; while [ ! -e /proc/acpi/call ] && [ $i -lt 30 ]; do i=$((i+1)); sleep 1; done; [ -e /proc/acpi/call ] || { echo "acpi_call hala yok"; exit 1; }'
+ExecStart=/usr/bin/monsterctl fanprofile --interval 3
+ExecStopPost=/usr/bin/monsterctl fan auto
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#162133"/>
+      <stop offset="1" stop-color="#0b0f16"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7db2ff"/>
+      <stop offset="1" stop-color="#4f8cff"/>
+    </linearGradient>
+    <linearGradient id="eye" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6bffc7"/>
+      <stop offset="1" stop-color="#1fae7d"/>
+    </linearGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="5" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="256" height="256" rx="58" fill="url(#bg)"/>
+  <rect x="4" y="4" width="248" height="248" rx="55" fill="none" stroke="#2c3a52" stroke-width="3"/>
+
+  <!-- gauge -->
+  <path d="M 68 182 A 82 82 0 1 1 188 182" fill="none" stroke="#243249"
+        stroke-width="15" stroke-linecap="round"/>
+  <path d="M 68 182 A 82 82 0 0 1 146 49" fill="none" stroke="url(#ring)"
+        stroke-width="15" stroke-linecap="round" filter="url(#glow)"/>
+
+  <!-- monster eye -->
+  <path d="M 76 128 Q 128 80 180 128 Q 128 176 76 128 Z" fill="#0c1421"
+        stroke="url(#eye)" stroke-width="7" stroke-linejoin="round"/>
+  <ellipse cx="128" cy="128" rx="16" ry="23" fill="url(#eye)" filter="url(#glow)"/>
+  <ellipse cx="128" cy="128" rx="5" ry="18" fill="#061018"/>
+  <circle cx="121" cy="117" r="4" fill="#dcfff3" opacity="0.95"/>
+</svg>
