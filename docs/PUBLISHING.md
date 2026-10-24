@@ -40,13 +40,13 @@ cd packaging/aur
 makepkg -si          # paketi indirir, derler, kurar
 ```
 
-Paket kaynağı GitHub'daki `v1.0.0` etiketidir. Sürüm yükseltirken
+Paket kaynağı GitHub'daki `v1.1.0` etiketidir. Sürüm yükseltirken
 `packaging/aur/PKGBUILD` içindeki `pkgver`, `sha256sums` ve source URL'sini
 güncelleyin:
 
 ```bash
 curl -L -o /tmp/openmonster.tar.gz \
-  https://github.com/talhayksk/openmonster/archive/refs/tags/v1.0.1.tar.gz
+  https://github.com/talhayksk/openmonster/archive/refs/tags/v1.1.0.tar.gz
 sha256sum /tmp/openmonster.tar.gz
 makepkg --printsrcinfo > .SRCINFO
 ```
@@ -77,7 +77,7 @@ git clone ssh://aur@aur.archlinux.org/openmonster.git ~/aur-openmonster
 cd ~/aur-openmonster
 cp ~/projeler/monster-ctrl/packaging/aur/{PKGBUILD,.SRCINFO,openmonster.install} .
 git add PKGBUILD .SRCINFO openmonster.install
-git commit -m "Initial import: openmonster 1.0.0-1"
+git commit -m "Initial import: openmonster 1.1.0-1"
 git push
 ```
 
@@ -121,13 +121,13 @@ derlendiği için host'taki yeni glibc'ye bağımlı kalmaz.
 
 ```bash
 ./scripts/build-deb.sh
-# dist/openmonster_1.0.0-1_amd64.deb
+# dist/openmonster_1.1.0-1_amd64.deb
 ```
 
 Kurulum:
 
 ```bash
-sudo apt install ./openmonster_1.0.0-1_amd64.deb
+sudo apt install ./openmonster_1.1.0-1_amd64.deb
 openmonster
 ```
 
@@ -142,13 +142,13 @@ Paket, `fedora:41` konteynerinde `rpmbuild` ile derlenir.
 
 ```bash
 ./scripts/build-rpm.sh
-# dist/openmonster-1.0.0-1.fc41.x86_64.rpm
+# dist/openmonster-1.1.0-1.fc41.x86_64.rpm
 ```
 
 Kurulum:
 
 ```bash
-sudo dnf install ./openmonster-1.0.0-1.fc41.x86_64.rpm
+sudo dnf install ./openmonster-1.1.0-1.fc41.x86_64.rpm
 openmonster
 ```
 
@@ -165,14 +165,14 @@ dağıtımında çalışır. C yardımcısı statik derlenir.
 
 ```bash
 ./scripts/build-portable.sh
-# dist/openmonster-1.0.0-portable-x86_64.tar.gz
+# dist/openmonster-1.1.0-portable-x86_64.tar.gz
 ```
 
 Kurulum/kaldırma:
 
 ```bash
-tar -xzf openmonster-1.0.0-portable-x86_64.tar.gz
-cd openmonster-1.0.0-portable
+tar -xzf openmonster-1.1.0-portable-x86_64.tar.gz
+cd openmonster-1.1.0-portable
 sudo ./install.sh
 # kaldırmak için: sudo ./uninstall.sh
 ```
@@ -257,6 +257,12 @@ hazırlanabilir.
 2. `.deb`, `.rpm` ve portable arşivi Docker konteynerlerinde derler.
 3. `SHA256SUMS-linux` üretir; workflow artifact'i olarak yükler ve release
    yayınıysa GitHub release'ine ekler.
+
+Uygulamanın **Güncelleme** sayfası GitHub Releases API'sindeki en son sürümü
+kullanır. Release'e en az bir dağıtım paketi (`.deb`, `.rpm`, `.pkg.tar.zst`
+veya `-portable-x86_64.tar.gz`) ve mutlaka `SHA256SUMS-linux` eklenmelidir;
+dosya adları workflow çıktısıyla aynı olmalıdır. Güncelleyici SHA-256
+doğrulaması olmadan kurulum yapmaz.
 
 Yerel olarak aynı çıktıları üretmek için:
 

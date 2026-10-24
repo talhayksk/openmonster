@@ -5,7 +5,7 @@ set -euo pipefail
 
 SRC="${SRC:-/src}"
 OUT="${OUT:-/out}"
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.1.0}"
 REL="${REL:-1}"
 ARCH="${ARCH:-amd64}"
 
@@ -65,7 +65,7 @@ Architecture: $ARCH
 Maintainer: Talha Yuksek <talha.yuksek@hotmail.com>
 Installed-Size: $SIZE
 Depends: python3, python3-pyqt6, policykit-1 | pkexec, kmod, systemd
-Recommends: acpi-call-dkms, nvidia-driver
+Recommends: acpi-call-dkms, nvidia-driver, v4l-utils
 Homepage: https://github.com/talhayksk/openmonster
 Description: Monster/Uniwill laptop control center for Linux
  Fan curve, keyboard RGB, battery charge limit, CPU power limits and system
@@ -86,6 +86,8 @@ set -e
 
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl disable --now monster-ctrl-fanprofile.service >/dev/null 2>&1 || true
+    systemctl enable --now monster-ctrl-profile.service >/dev/null 2>&1 || true
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
@@ -99,8 +101,9 @@ OpenMonster kuruldu.
 
   Uygulama: openmonster
   CLI:      monsterctl (sudo monsterctl status)
-  Fan profili servisi (istege bagli):
-      sudo systemctl enable --now monster-ctrl-fanprofile.service
+  Otomatik ayarlar: monster-ctrl-profile.service (kurulumda etkinlestirildi)
+      Durum: sudo systemctl status monster-ctrl-profile
+      Ayarlar GUI'den yapilir; acilista ve AC/pil degisiminde uygulanir.
 
   Fan/batarya icin acpi_call modulu gerekir. NVIDIA verileri icin
   nvidia surucusu onerilir.
@@ -113,6 +116,7 @@ cat > "$PKG/DEBIAN/prerm" <<'EOF'
 set -e
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now monster-ctrl-profile.service >/dev/null 2>&1 || true
         systemctl disable --now monster-ctrl-fanprofile.service >/dev/null 2>&1 || true
     fi
 fi

@@ -18,8 +18,9 @@ gui: $(TARGET)
 
 service: install
 	systemctl daemon-reload
-	systemctl enable --now monster-ctrl-fanprofile.service
-	@echo "Fan profili servisi aktif: systemctl status monster-ctrl-fanprofile"
+	-systemctl disable --now monster-ctrl-fanprofile.service
+	systemctl enable --now monster-ctrl-profile.service
+	@echo "Otomatik profil servisi aktif: systemctl status monster-ctrl-profile"
 
 install: $(TARGET)
 	install -Dm0755 $(TARGET) $(DESTDIR)$(BINDIR)/monsterctl
@@ -34,10 +35,11 @@ install: $(TARGET)
 	install -Dm0644 etc/monster-ctrl.conf $(DESTDIR)/etc/modprobe.d/monster-ctrl.conf
 	install -Dm0644 etc/monster-ctrl.load $(DESTDIR)/etc/modules-load.d/monster-ctrl.load
 	install -Dm0644 etc/monster-ctrl-fanprofile.service $(DESTDIR)/etc/systemd/system/monster-ctrl-fanprofile.service
+	install -Dm0644 etc/monster-ctrl-profile.service $(DESTDIR)/etc/systemd/system/monster-ctrl-profile.service
 	install -Dm644 LICENSE $(DESTDIR)$(PREFIX)/share/licenses/openmonster/LICENSE
 	@echo "OpenMonster kuruldu."
 	@echo "Uygulama: openmonster   |   CLI: sudo monsterctl status"
-	@echo "Fan profili servisi icin: sudo make service"
+	@echo "Acilista otomatik ayarlar icin: sudo make service"
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/monsterctl $(DESTDIR)$(BINDIR)/openmonster
@@ -49,7 +51,8 @@ uninstall:
 	done
 	rm -f $(DESTDIR)/etc/modprobe.d/monster-ctrl.conf $(DESTDIR)/etc/modules-load.d/monster-ctrl.load
 	rm -f $(DESTDIR)/etc/systemd/system/monster-ctrl-fanprofile.service
-	@echo "Servisi kapatmak icin: sudo systemctl disable --now monster-ctrl-fanprofile"
+	rm -f $(DESTDIR)/etc/systemd/system/monster-ctrl-profile.service
+	@echo "Servisleri kapatmak icin: sudo systemctl disable --now monster-ctrl-profile monster-ctrl-fanprofile"
 
 clean:
 	rm -f $(TARGET)

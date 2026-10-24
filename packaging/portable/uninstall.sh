@@ -8,6 +8,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now monster-ctrl-profile.service >/dev/null 2>&1 || true
     systemctl disable --now monster-ctrl-fanprofile.service >/dev/null 2>&1 || true
 fi
 
@@ -21,6 +22,7 @@ done
 rm -rf /usr/share/licenses/openmonster
 rm -f /etc/modprobe.d/monster-ctrl.conf
 rm -f /etc/modules-load.d/monster-ctrl.load
+rm -f /etc/systemd/system/monster-ctrl-profile.service
 rm -f /etc/systemd/system/monster-ctrl-fanprofile.service
 
 if command -v systemctl >/dev/null 2>&1; then

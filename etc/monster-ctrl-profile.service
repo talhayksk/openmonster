@@ -1,0 +1,21 @@
+# OpenMonster kalici otomatik ayar servisi
+# Kurulum: sudo make service
+# Ayarlar GUI -> root yardimci -> /etc/openmonster/autoprofile.conf
+# Servis dosyayi izler; acilista, AC/pil degisiminde ve ayar degisince uygular.
+[Unit]
+Description=OpenMonster otomatik profil, guc ve webcam ayarlari
+Documentation=https://github.com/talhayksk/openmonster
+After=multi-user.target
+Requires=systemd-modules-load.service
+
+[Service]
+Type=simple
+# acpi_call hazir olana kadar kisa sure bekle; yoksa CPU/ekran ayarlari yine uygulanir.
+ExecStartPre=/bin/sh -c 'i=0; while [ ! -e /proc/acpi/call ] && [ $i -lt 30 ]; do i=$((i+1)); sleep 1; done; exit 0'
+ExecStart=/usr/bin/monsterctl autoprofile --interval 3
+ExecStopPost=-/usr/bin/monsterctl fan auto
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

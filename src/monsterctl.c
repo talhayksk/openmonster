@@ -15,6 +15,9 @@
 #include <dirent.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <linux/input.h>
 
 #define ACPI_CALL_PATH   "/proc/acpi/call"
@@ -55,6 +58,8 @@
 #define BACKLIGHT_DIR        "/sys/class/backlight"
 #define CPUFREQ_DIR          "/sys/devices/system/cpu/cpufreq"
 #define CPU_SYS_DIR          "/sys/devices/system/cpu"
+#define AUTO_CONFIG_DIR      "/etc/openmonster"
+#define AUTO_CONFIG_PATH     AUTO_CONFIG_DIR "/autoprofile.conf"
 
 #define FAN_SAFETY_TEMP      70
 #define FAN_SAFETY_MIN_PCT   40
@@ -362,6 +367,19 @@ static int fan_apply_direct(int fan_idx, uint8_t speed)
 	uint16_t direct = fan_idx == 0 ? EC_FAN0_DIRECT : EC_FAN1_DIRECT;
 	if (ec_write_raw(direct, speed) != 0) return -1;
 	if (ec_write_raw(table, speed) != 0) return -1;
+	return 0;
+}
+
+// daemon icin: iki fani da dogrudan sur, bekleme yapmadan
+static int fan_set_pct_direct(int pct)
+{
+	if (pct < 0) pct = 0;
+	if (pct > 100) pct = 100;
+	uint8_t speed = fan_speed_from_pct(pct);
+	if (fan_backup_if_needed() != 0) return -1;
+	if (fan_universal_init(speed, speed) != 0) return -1;
+	if (fan_apply_direct(0, speed) != 0) return -1;
+	if (fan_apply_direct(1, speed) != 0) return -1;
 	return 0;
 }
 
@@ -906,6 +924,10 @@ static int rapl_set_w(const char *kind, int watts)
 	long long max_uw = -1, min_uw = -1;
 	snprintf(p, sizeof(p), RAPL_DIR "/constraint_%d_max_power_limit_uw", idx);
 	if (read_sys(p, buf, sizeof(buf)) == 0) max_uw = atoll(buf);
+	if (max_uw <= 0) {
+		snprintf(p, sizeof(p), RAPL_DIR "/constraint_%d_max_power_uw", idx);
+		if (read_sys(p, buf, sizeof(buf)) == 0) max_uw = atoll(buf);
+	}
 	snprintf(p, sizeof(p), RAPL_DIR "/constraint_%d_min_power_limit_uw", idx);
 	if (read_sys(p, buf, sizeof(buf)) == 0) min_uw = atoll(buf);
 
@@ -1197,6 +1219,681 @@ static int cmd_fanprofile(int argc, char **argv)
 	return 0;
 }
 
+// ---------- kalici otomatik profil / webcam servisi ----------
+#define AUTO_CURVE_MAX 16
+
+typedef struct {
+	char name[64];
+	char fan_mode[16];      // manual | curve | auto
+	int fan;
+	curve_pt_t curve[AUTO_CURVE_MAX];
+	int curve_len;
+	int pl1_w, pl2_w, pl4_w;
+	int brightness;
+	char governor[32];
+	char epp[32];
+	int max_freq;
+	int cores;
+} auto_profile_t;
+
+typedef struct {
+	int enabled;            // AC/pil otomasyonu acik mi
+	int manual;             // son elle yapilan ayar, kaynak profilini gecersiz kilar
+	auto_profile_t last, ac, bat;
+	int web_enabled;
+	char web_device[64];
+	int web_has_brightness, web_brightness;
+	int web_has_contrast, web_contrast;
+	int web_has_saturation, web_saturation;
+	int web_has_gamma, web_gamma;
+	int web_has_sharpness, web_sharpness;
+	int web_has_wb_auto, web_wb_auto;
+	int web_has_wb_temp, web_wb_temp;
+	int web_has_exposure_auto, web_exposure_auto;
+	int web_has_exposure_time, web_exposure_time;
+} auto_config_t;
+
+static void auto_copy_str(char *dst, size_t len, const char *src)
+{
+	if (len == 0) return;
+	snprintf(dst, len, "%s", src ? src : "");
+}
+
+static int parse_int_range(const char *value, int lo, int hi, int *out)
+{
+	if (!value || !*value) return -1;
+	char *end = NULL;
+	long v = strtol(value, &end, 10);
+	if (end == value) return -1;
+	while (end && *end && isspace((unsigned char)*end)) end++;
+	if (end && *end) return -1;
+	if (v < lo || v > hi) return -1;
+	*out = (int)v;
+	return 0;
+}
+
+static void auto_profile_defaults(auto_profile_t *p)
+{
+	memset(p, 0, sizeof(*p));
+}
+
+static void auto_config_defaults(auto_config_t *c)
+{
+	memset(c, 0, sizeof(*c));
+	auto_profile_defaults(&c->last);
+	auto_profile_defaults(&c->ac);
+	auto_profile_defaults(&c->bat);
+}
+
+static void auto_profile_key(auto_profile_t *p, const char *key, const char *val)
+{
+	int v;
+	if (strcmp(key, "name") == 0) {
+		auto_copy_str(p->name, sizeof(p->name), val);
+	} else if (strcmp(key, "fan_mode") == 0) {
+		if (strcmp(val, "manual") == 0 || strcmp(val, "curve") == 0 ||
+		    strcmp(val, "auto") == 0)
+			auto_copy_str(p->fan_mode, sizeof(p->fan_mode), val);
+	} else if (strcmp(key, "fan") == 0) {
+		if (parse_int_range(val, 0, 100, &v) == 0) p->fan = v;
+	} else if (strcmp(key, "curve") == 0) {
+		curve_pt_t tmp[AUTO_CURVE_MAX];
+		int n = 0;
+		if (parse_curve(val, tmp, AUTO_CURVE_MAX, &n) == 0) {
+			memcpy(p->curve, tmp, sizeof(tmp[0]) * (size_t)n);
+			p->curve_len = n;
+		}
+	} else if (strcmp(key, "pl1_w") == 0) {
+		if (parse_int_range(val, 0, 500, &v) == 0) p->pl1_w = v;
+	} else if (strcmp(key, "pl2_w") == 0) {
+		if (parse_int_range(val, 0, 500, &v) == 0) p->pl2_w = v;
+	} else if (strcmp(key, "pl4_w") == 0) {
+		if (parse_int_range(val, 0, 500, &v) == 0) p->pl4_w = v;
+	} else if (strcmp(key, "brightness") == 0) {
+		if (parse_int_range(val, 0, 100, &v) == 0) p->brightness = v;
+	} else if (strcmp(key, "governor") == 0) {
+		auto_copy_str(p->governor, sizeof(p->governor), val);
+	} else if (strcmp(key, "epp") == 0) {
+		auto_copy_str(p->epp, sizeof(p->epp), val);
+	} else if (strcmp(key, "max_freq") == 0) {
+		if (parse_int_range(val, 0, 100, &v) == 0) p->max_freq = v;
+	} else if (strcmp(key, "cores") == 0) {
+		if (parse_int_range(val, 0, 1024, &v) == 0) p->cores = v;
+	}
+}
+
+static void auto_webcam_key(auto_config_t *c, const char *key, const char *val)
+{
+	int v;
+	if (strcmp(key, "webcam_enabled") == 0) {
+		if (parse_int_range(val, 0, 1, &v) == 0) c->web_enabled = v;
+	} else if (strcmp(key, "webcam_device") == 0) {
+		if (strncmp(val, "/dev/", 5) == 0)
+			auto_copy_str(c->web_device, sizeof(c->web_device), val);
+	} else if (strcmp(key, "webcam_brightness") == 0) {
+		if (parse_int_range(val, -10000, 10000, &v) == 0) {
+			c->web_brightness = v; c->web_has_brightness = 1;
+		}
+	} else if (strcmp(key, "webcam_contrast") == 0) {
+		if (parse_int_range(val, -10000, 10000, &v) == 0) {
+			c->web_contrast = v; c->web_has_contrast = 1;
+		}
+	} else if (strcmp(key, "webcam_saturation") == 0) {
+		if (parse_int_range(val, -10000, 10000, &v) == 0) {
+			c->web_saturation = v; c->web_has_saturation = 1;
+		}
+	} else if (strcmp(key, "webcam_gamma") == 0) {
+		if (parse_int_range(val, -10000, 10000, &v) == 0) {
+			c->web_gamma = v; c->web_has_gamma = 1;
+		}
+	} else if (strcmp(key, "webcam_sharpness") == 0) {
+		if (parse_int_range(val, -10000, 10000, &v) == 0) {
+			c->web_sharpness = v; c->web_has_sharpness = 1;
+		}
+	} else if (strcmp(key, "webcam_wb_auto") == 0) {
+		if (parse_int_range(val, 0, 1, &v) == 0) {
+			c->web_wb_auto = v; c->web_has_wb_auto = 1;
+		}
+	} else if (strcmp(key, "webcam_wb_temp") == 0) {
+		if (parse_int_range(val, 0, 20000, &v) == 0) {
+			c->web_wb_temp = v; c->web_has_wb_temp = 1;
+		}
+	} else if (strcmp(key, "webcam_exposure_auto") == 0) {
+		if (parse_int_range(val, 0, 3, &v) == 0) {
+			c->web_exposure_auto = v; c->web_has_exposure_auto = 1;
+		}
+	} else if (strcmp(key, "webcam_exposure_time") == 0) {
+		if (parse_int_range(val, 0, 1000000, &v) == 0) {
+			c->web_exposure_time = v; c->web_has_exposure_time = 1;
+		}
+	}
+}
+
+static int parse_auto_config(const char *path, auto_config_t *c)
+{
+	auto_config_defaults(c);
+	FILE *f = fopen(path, "r");
+	if (!f) return -1;
+
+	char line[8192];
+	while (fgets(line, sizeof(line), f)) {
+		trim(line);
+		if (!line[0] || line[0] == '#') continue;
+		char *eq = strchr(line, '=');
+		if (!eq) continue;
+		*eq = '\0';
+		char *key = line, *val = eq + 1;
+		trim(key);
+		trim(val);
+
+		if (strcmp(key, "enabled") == 0) {
+			int v;
+			if (parse_int_range(val, 0, 1, &v) == 0) c->enabled = v;
+		} else if (strcmp(key, "manual") == 0) {
+			int v;
+			if (parse_int_range(val, 0, 1, &v) == 0) c->manual = v;
+		} else if (strncmp(key, "last_", 5) == 0) {
+			auto_profile_key(&c->last, key + 5, val);
+		} else if (strncmp(key, "ac_", 3) == 0) {
+			auto_profile_key(&c->ac, key + 3, val);
+		} else if (strncmp(key, "bat_", 4) == 0) {
+			auto_profile_key(&c->bat, key + 4, val);
+		} else if (strncmp(key, "webcam_", 7) == 0) {
+			auto_webcam_key(c, key, val);
+		}
+	}
+	fclose(f);
+	return 0;
+}
+
+static int auto_profile_present(const auto_profile_t *p)
+{
+	return p->name[0] || p->fan_mode[0] || p->pl1_w || p->pl2_w || p->pl4_w ||
+	       p->brightness || p->governor[0] || p->epp[0] ||
+	       p->max_freq || p->cores;
+}
+
+static auto_profile_t *auto_pick_profile(auto_config_t *c, int ac, int manual)
+{
+	if (!c->enabled) return NULL;
+	if (manual && auto_profile_present(&c->last)) return &c->last;
+	auto_profile_t *src = ac ? &c->ac : &c->bat;
+	if (auto_profile_present(src)) return src;
+	if (auto_profile_present(&c->last)) return &c->last;
+	return NULL;
+}
+
+static int ac_online_c(void)
+{
+	static const char *paths[] = {
+		"/sys/class/power_supply/AC0/online",
+		"/sys/class/power_supply/AC/online",
+		"/sys/class/power_supply/ACAD/online",
+		"/sys/class/power_supply/ADP1/online",
+	};
+	char buf[32];
+	for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+		if (read_sys(paths[i], buf, sizeof(buf)) == 0)
+			return atoi(buf) == 1 ? 1 : 0;
+	}
+	return -1;
+}
+
+static int auto_curve_tick(const auto_profile_t *p, int *inited, int *last_target)
+{
+	float cpu = temp_sys("temp1_input");
+	float gpu = temp_sys("temp2_input");
+	if (cpu < 0 && gpu < 0) {
+		uint8_t ce = 0, ge = 0;
+		if (ec_read_raw(EC_CPU_TEMP, &ce) == 0) cpu = (float)ce;
+		if (ec_read_raw(EC_GPU_TEMP, &ge) == 0) gpu = (float)ge;
+	}
+	if (cpu < 0 && gpu < 0) return -1;
+
+	float hottest = cpu > gpu ? cpu : gpu;
+	int target = curve_pct(p->curve, p->curve_len, (int)hottest);
+	if (hottest >= FAN_SAFETY_TEMP && target < FAN_SAFETY_MIN_PCT)
+		target = FAN_SAFETY_MIN_PCT;
+	if (target == *last_target) return 0;
+
+	uint8_t speed = fan_speed_from_pct(target);
+	int ok = 1;
+	if (!*inited) {
+		if (fan_backup_if_needed() != 0) return -1;
+		ok = fan_universal_init(speed, speed) == 0;
+		*inited = ok;
+	}
+	if (ok)
+		ok = fan_apply_direct(0, speed) == 0 &&
+		     fan_apply_direct(1, speed) == 0;
+	if (!ok) {
+		fprintf(stderr, "autoprofile: fan egrisi yazilamadi (acpi_call/izin?)\n");
+		return -1;
+	}
+	*last_target = target;
+	printf("autoprofile: CPU %.1fC GPU %.1fC -> fan %d%%\n", cpu, gpu, target);
+	fflush(stdout);
+	return 0;
+}
+
+static int auto_apply_profile(const auto_profile_t *p, int *curve_inited,
+			      int *curve_last, int *fan_touched)
+{
+	if (!p) return 0;
+	printf("autoprofile: profil '%s' uygulaniyor\n",
+	       p->name[0] ? p->name : "son ayarlar");
+	fflush(stdout);
+
+	if (strcmp(p->fan_mode, "curve") == 0 && p->curve_len > 0) {
+		*curve_inited = 0;
+		*curve_last = -1;
+		if (auto_curve_tick(p, curve_inited, curve_last) == 0)
+			*fan_touched = 1;
+	} else if (strcmp(p->fan_mode, "auto") == 0) {
+		if (fan_restore_backup() == 0) *fan_touched = 0;
+	} else if (strcmp(p->fan_mode, "manual") == 0) {
+		if (fan_set_pct_direct(p->fan) == 0) *fan_touched = 1;
+		else fprintf(stderr, "autoprofile: fan %d%% yazilamadi\n", p->fan);
+	}
+
+	if (p->pl1_w > 0) rapl_set_w("long_term", p->pl1_w);
+	if (p->pl2_w > 0) rapl_set_w("short_term", p->pl2_w);
+	if (p->pl4_w > 0) rapl_set_w("peak_power", p->pl4_w);
+
+	if (p->brightness > 0) {
+		char b[16];
+		char *av[] = { (char *)"display", (char *)"brightness", b, NULL };
+		snprintf(b, sizeof(b), "%d", p->brightness);
+		cmd_display(3, av);
+	}
+	if (p->governor[0])
+		cpu_apply_choice("scaling_governor", "scaling_available_governors",
+				 p->governor, "governor");
+	if (p->epp[0])
+		cpu_apply_choice("energy_performance_preference",
+				 "energy_performance_available_preferences",
+				 p->epp, "EPP");
+	if (p->max_freq >= 20) cpu_set_max_pct(p->max_freq);
+	if (p->cores >= 1) cpu_set_cores(p->cores);
+	return 0;
+}
+
+static int v4l2_run(const char *dev, const char *setarg)
+{
+	pid_t pid = fork();
+	if (pid < 0) return -1;
+	if (pid == 0) {
+		execlp("v4l2-ctl", "v4l2-ctl", "-d", dev, setarg, (char *)NULL);
+		_exit(127);
+	}
+	int status = 0;
+	while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
+	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+}
+
+static int apply_webcam(const auto_config_t *c)
+{
+	if (!c->web_enabled || strncmp(c->web_device, "/dev/", 5) != 0) return 0;
+	if (access(c->web_device, R_OK) != 0) {
+		fprintf(stderr, "autoprofile: webcam yok (%s)\n", c->web_device);
+		return -1;
+	}
+
+	char arg[128];
+	int tried = 0, ok = 0;
+#define CAM_SET(has, field, key) do { \
+	if (c->has) { \
+		snprintf(arg, sizeof(arg), "--set-ctrl=%s=%d", key, c->field); \
+		tried++; \
+		if (v4l2_run(c->web_device, arg) == 0) ok++; \
+		else fprintf(stderr, "autoprofile: webcam %s yazilamadi\n", key); \
+	} \
+} while (0)
+
+	CAM_SET(web_has_brightness, web_brightness, "brightness");
+	CAM_SET(web_has_contrast, web_contrast, "contrast");
+	CAM_SET(web_has_saturation, web_saturation, "saturation");
+	CAM_SET(web_has_gamma, web_gamma, "gamma");
+	CAM_SET(web_has_sharpness, web_sharpness, "sharpness");
+	CAM_SET(web_has_wb_auto, web_wb_auto, "white_balance_automatic");
+	if (c->web_has_wb_temp && (!c->web_has_wb_auto || !c->web_wb_auto))
+		CAM_SET(web_has_wb_temp, web_wb_temp, "white_balance_temperature");
+	CAM_SET(web_has_exposure_auto, web_exposure_auto, "auto_exposure");
+	if (c->web_has_exposure_time &&
+	    (!c->web_has_exposure_auto || c->web_exposure_auto == 1))
+		CAM_SET(web_has_exposure_time, web_exposure_time, "exposure_time_absolute");
+#undef CAM_SET
+
+	if (tried)
+		printf("autoprofile: webcam %s -> %d/%d kontrol uygulandi\n",
+		       c->web_device, ok, tried);
+	if (tried && ok == 0)
+		fprintf(stderr, "autoprofile: v4l2-ctl bulunamadi veya kamera izni yok\n");
+	fflush(stdout);
+	return ok == tried ? 0 : -1;
+}
+
+static void auto_print_profile(const char *label, const auto_profile_t *p)
+{
+	printf("  %s: name='%s' mode=%s fan=%d curve=%d pl1=%d pl2=%d pl4=%d "
+	       "brightness=%d governor='%s' epp='%s' max_freq=%d cores=%d\n",
+	       label, p->name, p->fan_mode[0] ? p->fan_mode : "-", p->fan,
+	       p->curve_len, p->pl1_w, p->pl2_w, p->pl4_w, p->brightness,
+	       p->governor, p->epp, p->max_freq, p->cores);
+}
+
+static void auto_print_config(const auto_config_t *c)
+{
+	printf("autoprofile: enabled=%d manual=%d\n", c->enabled, c->manual);
+	auto_print_profile("last", &c->last);
+	auto_print_profile("ac", &c->ac);
+	auto_print_profile("bat", &c->bat);
+	printf("  webcam: enabled=%d device='%s' brightness=%s%d contrast=%s%d "
+	       "saturation=%s%d gamma=%s%d sharpness=%s%d wb_auto=%s%d wb_temp=%s%d "
+	       "exposure_auto=%s%d exposure_time=%s%d\n",
+	       c->web_enabled, c->web_device,
+	       c->web_has_brightness ? "" : "-", c->web_brightness,
+	       c->web_has_contrast ? "" : "-", c->web_contrast,
+	       c->web_has_saturation ? "" : "-", c->web_saturation,
+	       c->web_has_gamma ? "" : "-", c->web_gamma,
+	       c->web_has_sharpness ? "" : "-", c->web_sharpness,
+	       c->web_has_wb_auto ? "" : "-", c->web_wb_auto,
+	       c->web_has_wb_temp ? "" : "-", c->web_wb_temp,
+	       c->web_has_exposure_auto ? "" : "-", c->web_exposure_auto,
+	       c->web_has_exposure_time ? "" : "-", c->web_exposure_time);
+}
+
+static volatile sig_atomic_t auto_stop = 0;
+static volatile sig_atomic_t auto_reload = 0;
+
+static void auto_signal(int sig)
+{
+	if (sig == SIGHUP) auto_reload = 1;
+	else auto_stop = 1;
+}
+
+static int cmd_autoprofile(int argc, char **argv)
+{
+	int interval = 3;
+	int check = 0;
+	int once = 0;
+	const char *path = AUTO_CONFIG_PATH;
+
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--interval") == 0 && i + 1 < argc) {
+			interval = atoi(argv[++i]);
+		} else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+			path = argv[++i];
+		} else if (strcmp(argv[i], "--check") == 0) {
+			check = 1;
+		} else if (strcmp(argv[i], "--once") == 0) {
+			once = 1;
+		} else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+			printf("kullanim: monsterctl autoprofile [--interval <sn>] "
+			       "[--config <dosya>] [--check] [--once]\n");
+			return 0;
+		} else {
+			fprintf(stderr, "bilinmeyen autoprofile secenegi: %s\n", argv[i]);
+			return 2;
+		}
+	}
+	if (interval < 1) interval = 1;
+
+	auto_config_t cfg;
+	int loaded = parse_auto_config(path, &cfg) == 0;
+	if (check) {
+		if (!loaded) {
+			fprintf(stderr, "autoprofile: ayar dosyasi okunamadi: %s\n", path);
+			return 1;
+		}
+		auto_print_config(&cfg);
+		return 0;
+	}
+
+	struct stat st;
+	time_t cfg_mtime = 0;
+	off_t cfg_size = 0;
+	int have_stat = stat(path, &st) == 0;
+	if (have_stat) {
+		cfg_mtime = st.st_mtime;
+		cfg_size = st.st_size;
+	}
+
+	int source = ac_online_c();
+	if (source < 0) source = 0;
+	int curve_inited = 0, curve_last = -1, fan_touched = 0;
+	auto_profile_t *current = auto_pick_profile(&cfg, source == 1, cfg.manual);
+
+	if (once) {
+		if (!current) {
+			fprintf(stderr, "autoprofile: uygulanacak profil yok (%s)\n", path);
+			return 1;
+		}
+		apply_webcam(&cfg);
+		auto_apply_profile(current, &curve_inited, &curve_last, &fan_touched);
+		return 0;
+	}
+
+	struct sigaction sa = { 0 };
+	sa.sa_handler = auto_signal;
+	sigaction(SIGINT, &sa, NULL);
+	sigaction(SIGTERM, &sa, NULL);
+	sigaction(SIGHUP, &sa, NULL);
+
+	printf("autoprofile: servis aktif (interval=%ds, kaynak=%s, dosya=%s)\n",
+	       interval, source == 1 ? "AC" : "pil", path);
+	fflush(stdout);
+	if (loaded) {
+		apply_webcam(&cfg);
+		if (current) auto_apply_profile(current, &curve_inited, &curve_last,
+						&fan_touched);
+	}
+
+	unsigned int ac_tick = 0, curve_tick = 0;
+	while (!auto_stop) {
+		sleep(1);
+		if (auto_stop) break;
+
+		// ayar dosyasi degisti mi? (GUI root yardimcisi atomik yazar)
+		have_stat = stat(path, &st) == 0;
+		int changed = auto_reload;
+		if (have_stat && (st.st_mtime != cfg_mtime || st.st_size != cfg_size))
+			changed = 1;
+		auto_reload = 0;
+		if (changed) {
+			auto_config_t next;
+			int ok = parse_auto_config(path, &next) == 0;
+			if (have_stat) {
+				cfg_mtime = st.st_mtime;
+				cfg_size = st.st_size;
+			} else {
+				cfg_mtime = 0;
+				cfg_size = 0;
+			}
+			if (ok) {
+				cfg = next;
+				printf("autoprofile: ayarlar yeniden yuklendi (enabled=%d manual=%d)\n",
+				       cfg.enabled, cfg.manual);
+				fflush(stdout);
+				apply_webcam(&cfg);
+				current = auto_pick_profile(&cfg, source == 1, cfg.manual);
+				if (current) {
+					curve_inited = 0;
+					curve_last = -1;
+					auto_apply_profile(current, &curve_inited, &curve_last,
+							   &fan_touched);
+				} else if (fan_touched) {
+					fan_restore_backup();
+					fan_touched = 0;
+				}
+			} else {
+				auto_config_defaults(&cfg);
+				current = NULL;
+				if (fan_touched) {
+					fan_restore_backup();
+					fan_touched = 0;
+				}
+				printf("autoprofile: ayar dosyasi yok/gecersiz; profil uygulanmiyor\n");
+				fflush(stdout);
+			}
+		}
+
+		ac_tick++;
+		if (ac_tick % 2 == 0) {
+			int now = ac_online_c();
+			if (now >= 0 && now != source) {
+				source = now;
+				printf("autoprofile: kaynak %s -> profil seciliyor\n",
+				       source == 1 ? "AC" : "pil");
+				fflush(stdout);
+				current = auto_pick_profile(&cfg, source == 1, 0);
+				curve_inited = 0;
+				curve_last = -1;
+				if (current) {
+					auto_apply_profile(current, &curve_inited, &curve_last,
+							   &fan_touched);
+				} else if (fan_touched) {
+					fan_restore_backup();
+					fan_touched = 0;
+				}
+			}
+		}
+
+		curve_tick++;
+		if (current && strcmp(current->fan_mode, "curve") == 0 &&
+		    current->curve_len > 0 && curve_tick >= (unsigned int)interval) {
+			curve_tick = 0;
+			if (auto_curve_tick(current, &curve_inited, &curve_last) == 0)
+				fan_touched = 1;
+		}
+	}
+
+	if (fan_touched) {
+		printf("autoprofile: cikiliyor; EC fan tablolari geri yukleniyor...\n");
+		fflush(stdout);
+		fan_restore_backup();
+	}
+	return 0;
+}
+
+// ---- GUI'nin root yardimci uzerinden ayar yazmasi ----
+static int b64_value(char c)
+{
+	if (c >= 'A' && c <= 'Z') return c - 'A';
+	if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+	if (c >= '0' && c <= '9') return c - '0' + 52;
+	if (c == '+') return 62;
+	if (c == '/') return 63;
+	return -1;
+}
+
+static unsigned char *b64_decode(const char *s, size_t *out_len)
+{
+	size_t cap = strlen(s) * 3 / 4 + 8;
+	unsigned char *out = malloc(cap ? cap : 1);
+	if (!out) return NULL;
+	size_t o = 0;
+	int quad[4], q = 0;
+	for (; *s; s++) {
+		unsigned char c = (unsigned char)*s;
+		if (isspace(c)) continue;
+		if (c == '=') break;
+		int v = b64_value((char)c);
+		if (v < 0) { free(out); return NULL; }
+		quad[q++] = v;
+		if (q == 4) {
+			out[o++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4));
+			out[o++] = (unsigned char)(((quad[1] & 15) << 4) | (quad[2] >> 2));
+			out[o++] = (unsigned char)(((quad[2] & 3) << 6) | quad[3]);
+			q = 0;
+		}
+	}
+	if (q == 2) {
+		out[o++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4));
+	} else if (q == 3) {
+		out[o++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4));
+		out[o++] = (unsigned char)(((quad[1] & 15) << 4) | (quad[2] >> 2));
+	} else if (q == 1) {
+		free(out);
+		return NULL;
+	}
+	*out_len = o;
+	return out;
+}
+
+static unsigned char *read_all_file(const char *path, size_t *out_len, size_t max)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f) return NULL;
+	if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+	long n = ftell(f);
+	if (n < 0 || (size_t)n > max || fseek(f, 0, SEEK_SET) != 0) {
+		fclose(f);
+		return NULL;
+	}
+	unsigned char *buf = malloc((size_t)n + 1);
+	if (!buf) { fclose(f); return NULL; }
+	size_t got = fread(buf, 1, (size_t)n, f);
+	fclose(f);
+	buf[got] = '\0';
+	*out_len = got;
+	return buf;
+}
+
+static int write_auto_config(const unsigned char *data, size_t len)
+{
+	if (len == 0 || len > 262144) return -1;
+	if (mkdir(AUTO_CONFIG_DIR, 0755) != 0 && errno != EEXIST) {
+		perror("autoprofile: " AUTO_CONFIG_DIR);
+		return -1;
+	}
+	char tmp[256];
+	snprintf(tmp, sizeof(tmp), AUTO_CONFIG_PATH ".tmp.%ld", (long)getpid());
+	FILE *f = fopen(tmp, "wb");
+	if (!f) {
+		perror("autoprofile: gecici dosya");
+		return -1;
+	}
+	if (fwrite(data, 1, len, f) != len || fflush(f) != 0) {
+		fclose(f);
+		unlink(tmp);
+		return -1;
+	}
+	fclose(f);
+	chmod(tmp, 0644);
+	if (rename(tmp, AUTO_CONFIG_PATH) != 0) {
+		perror("autoprofile: rename");
+		unlink(tmp);
+		return -1;
+	}
+	chmod(AUTO_CONFIG_PATH, 0644);
+	return 0;
+}
+
+static int cmd_sysconfig(int argc, char **argv)
+{
+	if (argc < 2) {
+		fprintf(stderr, "kullanim: monsterctl sysconfig <base64|dosya>\n");
+		return 2;
+	}
+	unsigned char *data = NULL;
+	size_t len = 0;
+	if (argv[1][0] == '/') {
+		data = read_all_file(argv[1], &len, 262144);
+	} else {
+		data = b64_decode(argv[1], &len);
+	}
+	if (!data) {
+		fprintf(stderr, "autoprofile: ayar verisi cozulemedi.\n");
+		return 2;
+	}
+	int rc = write_auto_config(data, len);
+	free(data);
+	if (rc != 0) return 1;
+	printf("Acilis ayarlari guncellendi: %s\n", AUTO_CONFIG_PATH);
+	return 0;
+}
+
 static long long mem_available_mb(void)
 {
 	FILE *f = fopen("/proc/meminfo", "r");
@@ -1341,6 +2038,7 @@ static int helper_handle(char *line){
 	else if (strcmp(tok[0], "power") == 0)   rc = cmd_power(n, tok);
 	else if (strcmp(tok[0], "display") == 0) rc = cmd_display(n, tok);
 	else if (strcmp(tok[0], "cpu") == 0)     rc = cmd_cpu(n, tok);
+	else if (strcmp(tok[0], "sysconfig") == 0) rc = cmd_sysconfig(n, tok);
 	else if (strcmp(tok[0], "cleanup") == 0) rc = cmd_cleanup(n, tok);
 	else fprintf(stderr, "bilinmeyen komut: %s\n", tok[0]);
 	printf("RC %d\n", rc);
@@ -1364,7 +2062,7 @@ static int cmd_helper(void)
 	fds[0].fd = STDIN_FILENO; fds[0].events = POLLIN; fds[0].revents = 0;
 	fds[1].fd = hk;           fds[1].events = POLLIN; fds[1].revents = 0;
 
-	char buf[2048];
+	char buf[65536];
 	size_t blen = 0;
 	uint8_t ec_last = 0;
 	(void)ec_read_raw(EC_MANUAL_FAN_CTRL, &ec_last);
@@ -1437,8 +2135,10 @@ static void usage(void)
 		"  sudo monsterctl cpu governor <performance|powersave>\n"
 		"  sudo monsterctl cpu epp <default|performance|balance_performance|balance_power|power>\n"
 		"  sudo monsterctl cpu max <20-100> | cores <1-N>\n"
+		"  sudo monsterctl autoprofile [--interval <sn>] [--check] [--once]\n"
+		"  sudo monsterctl sysconfig <base64|dosya>   (GUI tarafindan kullanilir)\n"
 		"  sudo monsterctl cleanup ram | journal [MB] | pkgcache | syscache\n",
-		"v1.0.0");
+		"v1.1.0");
 }
 
 int main(int argc, char **argv)
@@ -1466,6 +2166,8 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "power") == 0)   return cmd_power(argc - 1, argv + 1);
 	if (strcmp(argv[1], "display") == 0) return cmd_display(argc - 1, argv + 1);
 	if (strcmp(argv[1], "cpu") == 0)     return cmd_cpu(argc - 1, argv + 1);
+	if (strcmp(argv[1], "autoprofile") == 0) return cmd_autoprofile(argc - 1, argv + 1);
+	if (strcmp(argv[1], "sysconfig") == 0) return cmd_sysconfig(argc - 1, argv + 1);
 	if (strcmp(argv[1], "cleanup") == 0) return cmd_cleanup(argc - 1, argv + 1);
 	if (strcmp(argv[1], "helper") == 0)  return cmd_helper();
 	usage();

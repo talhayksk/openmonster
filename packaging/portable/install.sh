@@ -21,6 +21,8 @@ cp -a payload/. /
 
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl disable --now monster-ctrl-fanprofile.service >/dev/null 2>&1 || true
+    systemctl enable --now monster-ctrl-profile.service >/dev/null 2>&1 || true
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
@@ -35,14 +37,16 @@ OpenMonster kuruldu.
 
   Uygulama: openmonster
   CLI:      sudo monsterctl status
-  Fan profili servisi (istege bagli):
-      sudo systemctl enable --now monster-ctrl-fanprofile.service
+  Otomatik ayarlar: monster-ctrl-profile.service (etkinlestirildi)
+      sudo systemctl status monster-ctrl-profile
+  Ayarlar GUI'den yapilir; acilista ve AC/pil degisiminde uygulanir.
 
 Gereksinimler:
   - Python 3 + PyQt6
   - PolicyKit (pkexec)
   - kmod + systemd
   - Fan/batarya icin acpi_call modulu
+  - Webcam ayarlari icin v4l2-ctl (v4l-utils)
   - NVIDIA verileri icin NVIDIA surucusu
 
 Kaldirmak icin: sudo ./uninstall.sh

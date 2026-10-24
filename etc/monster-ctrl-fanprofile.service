@@ -1,4 +1,6 @@
-# monster-ctrl otomatik fan profili servisi (M4)
+# monster-ctrl otomatik fan profili servisi (M4, eski)
+# Yeni kurulumlarda monster-ctrl-profile.service tercih edilir; ikisini
+# ayni anda calistirmayin.
 # Kurulum: sudo make install  &&  sudo systemctl enable --now monster-ctrl-fanprofile
 # OEM otomatik moda donus: sudo systemctl disable --now monster-ctrl-fanprofile && sudo monsterctl fan auto
 [Unit]

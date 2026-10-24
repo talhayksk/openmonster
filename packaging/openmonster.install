@@ -2,12 +2,16 @@ post_install() {
   gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
   update-desktop-database -q 2>/dev/null || true
   systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl disable --now monster-ctrl-fanprofile.service >/dev/null 2>&1 || true
+  systemctl enable --now monster-ctrl-profile.service >/dev/null 2>&1 || true
   cat <<'EOF'
 OpenMonster kuruldu.
 
   Uygulama menusunden "OpenMonster" ile acabilirsiniz.
   Root islemleri icin uygulama acilirken bir kez sifre sorulur.
-  Fan profil servisi (istege bagli): sudo systemctl enable --now monster-ctrl-fanprofile
+  Otomatik ayarlar: monster-ctrl-profile.service (etkinlestirildi)
+      sudo systemctl status monster-ctrl-profile
+  Ayarlar GUI'den yapilir; acilista ve AC/pil degisiminde uygulanir.
   Kaldirma: sudo pacman -R openmonster
 EOF
 }
@@ -17,6 +21,7 @@ post_upgrade() {
 }
 
 pre_remove() {
+  systemctl disable --now monster-ctrl-profile.service >/dev/null 2>&1 || true
   systemctl disable --now monster-ctrl-fanprofile.service >/dev/null 2>&1 || true
   systemctl daemon-reload >/dev/null 2>&1 || true
 }

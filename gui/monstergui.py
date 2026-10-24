@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# OpenMonster GUI v1.0.0 (PyQt6): modern koyu tema + ring gostergeli panel
+# OpenMonster GUI v1.1.0 (PyQt6): modern koyu tema + ring gostergeli panel
 # - Acilista BIR KEZ pkexec sifre penceresi; sonraki komutlar sifresiz (monsterctl helper)
 # - Root islemleri proje icindeki guncel binary ile yapilir.
 # - Sistem tepsisi: arka planda temizlik / fan / RGB hizli islemleri.
@@ -13,22 +13,46 @@ import math
 import time
 import random
 import shutil
+import base64
+import hashlib
 import subprocess
 import sys
+import tempfile
+import tarfile
 
-from PyQt6.QtCore import Qt, QTimer, QProcess, QRectF, QSize
-from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QIcon, QPixmap, QAction
+from PyQt6.QtCore import (
+    Qt, QTimer, QProcess, QProcessEnvironment, QRectF, QSize, QUrl,
+)
+from PyQt6.QtGui import (
+    QFont, QColor, QPainter, QPen, QIcon, QPixmap, QAction, QDesktopServices,
+)
+from PyQt6.QtNetwork import (
+    QNetworkAccessManager, QNetworkRequest, QNetworkReply,
+)
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QStackedWidget, QSlider,
     QSpinBox, QPlainTextEdit, QButtonGroup, QSizePolicy, QColorDialog,
     QScrollArea, QComboBox, QCheckBox, QSystemTrayIcon, QMenu, QDialog,
     QLineEdit, QFormLayout, QDialogButtonBox, QMessageBox, QTabWidget,
+    QProgressBar,
 )
+
+try:
+    from PyQt6.QtMultimedia import (
+        QCamera, QMediaCaptureSession, QMediaDevices, QVideoSink,
+    )
+    MULTIMEDIA_OK = True
+except ImportError:
+    QCamera = QMediaCaptureSession = QMediaDevices = QVideoSink = None
+    MULTIMEDIA_OK = False
 
 APP_NAME = "OpenMonster"
 APP_ID = "openmonster"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
+GITHUB_REPO = "talhayksk/openmonster"
+RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), APP_ID)
@@ -44,6 +68,7 @@ RAPL = "/sys/class/powercap/intel-rapl:0"
 BACKLIGHT_DIR = "/sys/class/backlight"
 CPUFREQ_DIR = "/sys/devices/system/cpu/cpufreq"
 CPU_SYS_DIR = "/sys/devices/system/cpu"
+V4L2_CTL = shutil.which("v4l2-ctl")
 PROJECT_BIN = os.path.join(APP_DIR, "monsterctl")
 INSTALLED_BIN = "/usr/local/bin/monsterctl"
 PACKAGED_BIN = "/usr/bin/monsterctl"
@@ -69,6 +94,63 @@ def app_icon():
         if os.path.exists(p):
             return QIcon(p)
     return QIcon.fromTheme(APP_ID)
+
+
+NAV_ICON_KINDS = ("monitor", "controls", "system", "cleanup", "update", "log")
+
+
+def nav_icon(kind, color="#8b98ab"):
+    """Menü için küçük çizgi ikonları (harici dosya gerektirmez)."""
+    pm = QPixmap(36, 36)
+    pm.fill(Qt.GlobalColor.transparent)
+    pm.setDevicePixelRatio(2.0)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setPen(QPen(QColor(color), 1.6, Qt.PenStyle.SolidLine,
+                  Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    if kind == "monitor":
+        p.drawRoundedRect(2, 3, 16, 11, 2, 2)
+        p.drawLine(7, 18, 13, 18)
+        p.drawLine(10, 14, 10, 18)
+        p.drawLine(5, 8, 8, 11)
+        p.drawLine(8, 11, 11, 6)
+        p.drawLine(11, 6, 14, 9)
+        p.drawLine(14, 9, 16, 7)
+    elif kind == "controls":
+        for y, x in ((5, 7), (11, 14), (17, 9)):
+            p.drawLine(3, y, 21, y)
+            p.drawEllipse(x - 2, y - 2, 4, 4)
+    elif kind == "system":
+        p.drawRoundedRect(2, 4, 20, 16, 2, 2)
+        p.drawEllipse(5, 8, 3, 3)
+        p.drawLine(10, 9, 19, 9)
+        p.drawLine(10, 13, 17, 13)
+        p.drawLine(6, 17, 19, 17)
+    elif kind == "cleanup":
+        p.drawLine(4, 6, 20, 6)
+        p.drawLine(9, 3, 15, 3)
+        p.drawLine(9, 3, 9, 6)
+        p.drawLine(15, 3, 15, 6)
+        p.drawLine(6, 6, 7, 21)
+        p.drawLine(18, 6, 17, 21)
+        p.drawLine(7, 21, 17, 21)
+        p.drawLine(10, 10, 10, 17)
+        p.drawLine(14, 10, 14, 17)
+    elif kind == "update":
+        p.drawArc(QRectF(4, 4, 16, 16), 45 * 16, 280 * 16)
+        p.drawLine(17, 2, 21, 5)
+        p.drawLine(21, 5, 18, 8)
+        p.drawLine(12, 8, 12, 15)
+        p.drawLine(9, 12, 12, 15)
+        p.drawLine(12, 15, 15, 12)
+    else:
+        p.drawRoundedRect(3, 4, 18, 16, 2, 2)
+        p.drawLine(7, 9, 10, 12)
+        p.drawLine(10, 12, 7, 15)
+        p.drawLine(12, 15, 17, 15)
+    p.end()
+    return QIcon(pm)
 
 C_BG = "#0b0f16"
 C_SIDEBAR = "#0e131c"
@@ -156,11 +238,82 @@ def backlight_pct():
 def ac_online():
     for p in ("/sys/class/power_supply/AC0/online",
               "/sys/class/power_supply/AC/online",
+              "/sys/class/power_supply/ACAD/online",
               "/sys/class/power_supply/ADP1/online"):
         v = rread(p)
         if v is not None:
             return v == "1"
     return None
+
+
+def rapl_max_w(kind):
+    """RAPL constraint'inin teknoloji üst sınırını W olarak döndürür."""
+    for i in range(4):
+        if rread(f"{RAPL}/constraint_{i}_name") != kind:
+            continue
+        # Çekirdeğe göre iki farklı sysfs adı var; sırayla dene.
+        for attr in ("max_power_limit_uw", "max_power_uw", "power_limit_uw"):
+            raw = rread(f"{RAPL}/constraint_{i}_{attr}")
+            try:
+                watts = int(raw) / 1e6 if raw else 0
+            except ValueError:
+                watts = 0
+            if watts > 0:
+                return watts
+        return None
+    return None
+
+
+def v4l2_controls(dev):
+    """v4l2-ctl --list-ctrls çıktısını {ad: {min,max,step,value,...}} yapar."""
+    if not V4L2_CTL or not os.path.exists(dev):
+        return {}
+    try:
+        out = subprocess.run([V4L2_CTL, "-d", dev, "--list-ctrls"],
+                             capture_output=True, text=True, timeout=2)
+    except (subprocess.SubprocessError, OSError):
+        return {}
+    if out.returncode != 0:
+        return {}
+    controls = {}
+    for line in out.stdout.splitlines():
+        m = re.match(r"\s*([a-z0-9_]+)\s+0x[0-9a-fA-F]+\s+\(([^)]+)\)\s*:\s*(.*)",
+                     line)
+        if not m:
+            continue
+        name, kind, rest = m.group(1), m.group(2), m.group(3)
+        info = {"type": kind}
+        for key in ("min", "max", "step", "default", "value"):
+            mm = re.search(rf"\b{key}=(-?\d+)", rest)
+            if mm:
+                info[key] = int(mm.group(1))
+        info["inactive"] = "inactive" in rest
+        controls[name] = info
+    return controls
+
+
+def v4l2_devices():
+    """Kontrolü olan /dev/video* aygıtlarını (yol, kontroller) döndürür."""
+    devices = []
+    for dev in sorted(glob.glob("/dev/video*")):
+        ctrls = v4l2_controls(dev)
+        if ctrls:
+            devices.append((dev, ctrls))
+    return devices
+
+
+def v4l2_set(dev, controls):
+    """Birden çok V4L2 kontrolünü tek çağrıda uygular. (rc, çıktı) döndürür."""
+    if not V4L2_CTL:
+        return 127, "v4l2-ctl bulunamadı"
+    args = [V4L2_CTL, "-d", dev]
+    for key, val in controls.items():
+        args.append(f"--set-ctrl={key}={int(val)}")
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=4)
+        return out.returncode, (out.stdout + out.stderr).strip()
+    except (subprocess.SubprocessError, OSError) as exc:
+        return 1, str(exc)
 
 
 def cpu_total_count():
@@ -511,8 +664,94 @@ def load_settings():
     return data if isinstance(data, dict) else {}
 
 
+def _safe_int(value, lo, hi, default=0):
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def load_last_settings(settings):
+    """Son uygulanan ayarları (açılışta da geçerli olacak şekilde) oku."""
+    raw = settings.get("last_settings")
+    if not isinstance(raw, dict):
+        raw = {}
+    mode = raw.get("fan_mode")
+    if mode not in ("manual", "curve", "auto"):
+        mode = ""
+    governor = raw.get("governor", "")
+    if governor not in ("performance", "powersave"):
+        governor = ""
+    epp = raw.get("epp", "")
+    if epp not in ("default", "performance", "balance_performance",
+                   "balance_power", "power"):
+        epp = ""
+    return {
+        "name": str(raw.get("name") or "Son ayarlar")[:64],
+        "fan_mode": mode,
+        "fan": _safe_int(raw.get("fan", 0), 0, 100),
+        "curve": normalize_curve(raw.get("curve")),
+        "pl1_w": _safe_int(raw.get("pl1_w", 0), 0, 500),
+        "pl2_w": _safe_int(raw.get("pl2_w", 0), 0, 500),
+        "pl4_w": _safe_int(raw.get("pl4_w", 0), 0, 500),
+        "brightness": _safe_int(raw.get("brightness", 0), 0, 100),
+        "governor": governor,
+        "epp": epp,
+        "max_freq": _safe_int(raw.get("max_freq", 0), 0, 100),
+        "cores": _safe_int(raw.get("cores", 0), 0, 1024),
+    }
+
+
 def save_settings(data):
     return save_json(SETTINGS_FILE, data)
+
+
+def parse_version(value):
+    """'v1.2.3' / '1.2.3-beta' -> (1, 2, 3); geçersizse ()."""
+    m = re.match(r"^[vV]?(\d+)\.(\d+)\.(\d+)", str(value or "").strip())
+    if not m:
+        return ()
+    return tuple(int(x) for x in m.groups())
+
+
+def distro_family():
+    """Paket yöneticisine göre debian / rpm / arch / portable döndürür."""
+    ids = ""
+    try:
+        with open("/etc/os-release", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith(("ID=", "ID_LIKE=")):
+                    ids += " " + line.split("=", 1)[1].strip().strip('"').lower()
+    except OSError:
+        pass
+    if any(x in ids for x in ("arch", "manjaro", "cachyos", "endeavouros")) \
+            and shutil.which("pacman"):
+        return "arch"
+    if any(x in ids for x in ("debian", "ubuntu", "linuxmint", "pop",
+                              "elementary", "zorin")) and shutil.which("apt-get"):
+        return "debian"
+    if any(x in ids for x in ("fedora", "rhel", "centos", "rocky", "almalinux",
+                              "opensuse", "suse")) and (
+            shutil.which("dnf") or shutil.which("zypper")):
+        return "rpm"
+    for family, cmd in (("arch", "pacman"), ("debian", "apt-get"),
+                        ("rpm", "dnf")):
+        if shutil.which(cmd):
+            return family
+    return "portable"
+
+
+def update_asset_kind(name):
+    low = (name or "").lower()
+    if low.endswith(".deb"):
+        return "deb"
+    if low.endswith(".rpm"):
+        return "rpm"
+    if low.endswith(".pkg.tar.zst"):
+        return "arch"
+    if low.endswith(".tar.gz") and "portable" in low:
+        return "portable"
+    return ""
 
 
 def autostart_enabled():
@@ -890,6 +1129,13 @@ QLabel#muted {{
     color: {C_MUTED};
     font-size: 11px;
 }}
+QLabel#camPreview {{
+    background: #070b12;
+    border: 1px solid {C_BORDER};
+    border-radius: 10px;
+    color: {C_MUTED};
+    font-size: 12px;
+}}
 QLabel#pillOk {{
     color: {C_OK};
     background: rgba(52, 211, 153, 0.10);
@@ -903,6 +1149,15 @@ QLabel#pillBad {{
     color: {C_HOT};
     background: rgba(248, 113, 113, 0.10);
     border: 1px solid rgba(248, 113, 113, 0.35);
+    border-radius: 10px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+}}
+QLabel#pillInfo {{
+    color: #9cc2ff;
+    background: rgba(79, 140, 255, 0.12);
+    border: 1px solid rgba(79, 140, 255, 0.35);
     border-radius: 10px;
     padding: 4px 10px;
     font-size: 11px;
@@ -1028,6 +1283,20 @@ QPlainTextEdit {{
     font-family: 'JetBrains Mono', 'DejaVu Sans Mono', monospace;
     font-size: 12px;
     padding: 8px;
+}}
+QProgressBar {{
+    background: {C_TRACK};
+    border: 1px solid {C_BORDER};
+    border-radius: 7px;
+    text-align: center;
+    color: {C_TEXT};
+    font-size: 10px;
+    min-height: 14px;
+    max-height: 14px;
+}}
+QProgressBar::chunk {{
+    background: {C_ACCENT};
+    border-radius: 6px;
 }}
 QScrollBar:vertical {{
     background: transparent; width: 8px; margin: 2px;
@@ -1225,6 +1494,29 @@ class Card(QFrame):
         self.setObjectName("card")
 
 
+class CameraPreview(QLabel):
+    """Sabit yükseklikte kamera önizlemesi.
+
+    QLabel'e pixmap verildiğinde sizeHint pixmap boyutuna döner; bu da
+    layout'un her karede büyümesine yol açar. Sabit sizeHint ile bunu önlüyoruz.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__("Kamera kapalı", parent)
+        self.setObjectName("camPreview")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedHeight(230)
+        self.setMinimumWidth(320)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Fixed)
+
+    def sizeHint(self):
+        return QSize(640, 230)
+
+    def minimumSizeHint(self):
+        return QSize(320, 230)
+
+
 def make_title(text):
     l = QLabel(text)
     l.setObjectName("cardTitle")
@@ -1330,6 +1622,24 @@ class Main(QMainWindow):
         self.start_hidden = start_hidden
         self.profiles = load_profiles()
         self.settings = load_settings()
+        self.last_settings = load_last_settings(self.settings)
+        self._net = QNetworkAccessManager(self)
+        self._update_reply = None
+        self._download_reply = None
+        self._checksum_reply = None
+        self._update_meta = None
+        self._update_asset = None
+        self._update_checksums_url = None
+        self._update_tmp = None
+        self._update_portable_dir = None
+        self._update_proc = None
+        self._update_proc_log = []
+        self._update_checked = False
+        self._update_available = False
+        self._update_busy = False
+        self.nav_update_btn = None
+        self._tray_update_action = None
+        self._pending_autoprofile = None
         self._waiting = []          # root baglantisi kurulunca calisacak isler
         self._quitting = False
         self._tray_note_shown = False
@@ -1350,7 +1660,11 @@ class Main(QMainWindow):
         self._curve_last_pct = None
         self._last_cpu_temp = None
         self._last_gpu_temp = None
-        self._last_source = None
+        _online = ac_online()
+        # Elle yapılan son ayar varsa ilk AC/pil kontrolünde profil ezilmesin.
+        self._last_source = (("ac" if _online else "bat")
+                             if _online is not None
+                             and self.settings.get("manual_mode") else None)
         self._active_profile = None
 
         root = QWidget()
@@ -1397,6 +1711,8 @@ class Main(QMainWindow):
         self.stack.addWidget(self._page_monitor())
         self.stack.addWidget(self._page_controls())
         self.stack.addWidget(self._page_system())
+        self.stack.addWidget(self._page_cleanup())
+        self.stack.addWidget(self._page_update())
         self.stack.addWidget(self._page_log())
         bl.addWidget(self.stack, 1)
         lay.addWidget(body, 1)
@@ -1406,7 +1722,7 @@ class Main(QMainWindow):
         self._init_toast()
         self._init_tray()
         start = int(os.environ.get("MONSTER_GUI_PAGE", "0") or 0)
-        if 0 <= start <= 3:
+        if 0 <= start <= 5:
             btn = self.nav_group.button(start)
             if btn:
                 btn.setChecked(True)
@@ -1421,6 +1737,11 @@ class Main(QMainWindow):
         self._auto_timer.setInterval(5000)
         self._auto_timer.timeout.connect(self._auto_profile_check)
         self._auto_timer.start(5000)
+        # Webcam ayarları GUI açılışında da uygulanır (root servisi olmasa bile).
+        QTimer.singleShot(1800, self._webcam_apply_saved)
+        # Açılışta sessiz güncelleme kontrolü (varsayılan açık).
+        if self.settings.get("auto_update_check", True):
+            QTimer.singleShot(4200, lambda: self._update_check(silent=True))
         self.refresh()
         if self.start_hidden and getattr(self, "tray", None) and self.tray.isVisible():
             self.tray.showMessage(APP_NAME, "Arka planda çalışıyor. Menü için simgeye sağ tıklayın.",
@@ -1541,10 +1862,20 @@ class Main(QMainWindow):
         auto.setCheckable(True)
         auto.setChecked(autostart_enabled())
         auto.triggered.connect(self._toggle_autostart)
+        self._tray_update_action = m.addAction(
+            "Güncelleme •" if self._update_available else "Güncelleme kontrol et",
+            self._open_update_page)
         m.addAction(f"Hakkında · v{APP_VERSION}", self._about)
         m.addSeparator()
         m.addAction("Çıkış", self.quit_app)
         self.tray.setContextMenu(m)
+
+    def _open_update_page(self):
+        self.show_window()
+        btn = self.nav_group.button(4)
+        if btn:
+            btn.setChecked(True)
+        self._go(4)
 
     def _toggle_autostart(self, checked):
         if set_autostart(checked):
@@ -1559,10 +1890,12 @@ class Main(QMainWindow):
             self, f"{APP_NAME} hakkında",
             f"<b>{APP_NAME}</b> v{APP_VERSION}<br>"
             "Monster/Uniwill laptoplar için Linux kontrol merkezi.<br><br>"
-            "Fan, klavye RGB, batarya limiti, CPU güç limitleri ve sistem "
-            "temizliği tek yerden.<br><br>"
+            "Fan, klavye RGB, batarya limiti, CPU güç limitleri, webcam, sistem "
+            "temizliği ve GitHub güncellemeleri tek yerden.<br><br>"
             "Profil 2.0: fan eğrisi, AC/pil otomasyonu, CPU governor/EPP, "
             "maksimum frekans, çekirdek sayısı ve ekran parlaklığı.<br><br>"
+            "Kalıcı ayarlar: root servisi açılışta ve AC/pil değişiminde "
+            "fan, güç, ekran, CPU ve webcam ayarlarını otomatik uygular.<br><br>"
             f"<a href='https://github.com/talhayksk/openmonster'>"
             "github.com/talhayksk/openmonster</a>")
 
@@ -1580,6 +1913,127 @@ class Main(QMainWindow):
         waiting, self._waiting = self._waiting, []
         for args, title, cb in waiting:
             self.helper.send(args, title, cb=cb)
+
+    # ---------- kalıcı otomatik ayarlar ----------
+    def _profile_runtime(self, prof):
+        """Profil yüzdesini, açılışta doğrudan yazılacak watt değerine çevir."""
+        power = _safe_int(prof.get("power", 0), 0, 100)
+        pl4 = _safe_int(prof.get("pl4", 0), 0, 100)
+        max1 = rapl_max_w("long_term") or self._max_pl_w or 0
+        max4 = rapl_max_w("peak_power") or self._max_pl4_w or 0
+        pl1 = max(5, int(round(max1 * power / 100.0))) if power > 0 and max1 else 0
+        pl4w = max(5, int(round(max4 * pl4 / 100.0))) if pl4 > 0 and max4 else 0
+        mode = prof.get("fan_mode", "manual")
+        if mode not in ("manual", "curve", "auto"):
+            mode = "manual"
+        return {
+            "name": str(prof.get("name", ""))[:64].replace("\n", " "),
+            "fan_mode": mode,
+            "fan": _safe_int(prof.get("fan", 0), 0, 100),
+            "curve": normalize_curve(prof.get("curve")),
+            "pl1_w": pl1,
+            "pl2_w": pl1,
+            "pl4_w": pl4w,
+            "brightness": _safe_int(prof.get("brightness", 0), 0, 100),
+            "governor": prof.get("governor", "")
+            if prof.get("governor") in ("performance", "powersave") else "",
+            "epp": prof.get("epp", "")
+            if prof.get("epp") in ("default", "performance", "balance_performance",
+                                   "balance_power", "power") else "",
+            "max_freq": _safe_int(prof.get("max_freq", 0), 0, 100),
+            "cores": _safe_int(prof.get("cores", 0), 0, 1024),
+        }
+
+    def _last_present(self):
+        p = self.last_settings
+        return bool(p.get("fan_mode") or p.get("pl1_w") or p.get("pl2_w")
+                    or p.get("pl4_w") or p.get("brightness") or p.get("governor")
+                    or p.get("epp") or p.get("max_freq") or p.get("cores"))
+
+    def _append_autoprofile(self, lines, prefix, data):
+        def clean(value):
+            return str(value if value is not None else "").replace("\n", " ").replace("\r", " ")
+
+        lines.append(f"{prefix}_name={clean(data.get('name', ''))}")
+        mode = data.get("fan_mode", "")
+        lines.append(f"{prefix}_fan_mode={mode}")
+        if mode == "curve":
+            curve = normalize_curve(data.get("curve"))
+            lines.append(f"{prefix}_curve=" + ",".join(f"{t}:{p}" for t, p in curve))
+        lines.append(f"{prefix}_fan={_safe_int(data.get('fan', 0), 0, 100)}")
+        for key in ("pl1_w", "pl2_w", "pl4_w"):
+            lines.append(f"{prefix}_{key}={_safe_int(data.get(key, 0), 0, 500)}")
+        lines.append(f"{prefix}_brightness={_safe_int(data.get('brightness', 0), 0, 100)}")
+        lines.append(f"{prefix}_governor={clean(data.get('governor', ''))}")
+        lines.append(f"{prefix}_epp={clean(data.get('epp', ''))}")
+        lines.append(f"{prefix}_max_freq={_safe_int(data.get('max_freq', 0), 0, 100)}")
+        lines.append(f"{prefix}_cores={_safe_int(data.get('cores', 0), 0, 1024)}")
+
+    def _build_autoprofile(self):
+        auto = bool(self.settings.get("auto_profiles", True))
+        manual = bool(self.settings.get("manual_mode", False))
+        lines = ["# OpenMonster otomatik ayarlar (GUI tarafından yazılır)",
+                 f"enabled={1 if auto else 0}",
+                 f"manual={1 if manual else 0}"]
+
+        if self._last_present():
+            last = dict(self.last_settings)
+            last["name"] = self.last_settings.get("name") or "Son ayarlar"
+            self._append_autoprofile(lines, "last", last)
+
+        for source in ("ac", "bat"):
+            prof = next((p for p in self.profiles
+                         if source in (p.get("bind") or [])), None)
+            if prof:
+                self._append_autoprofile(lines, source, self._profile_runtime(prof))
+
+        cam = self.settings.get("webcam")
+        if isinstance(cam, dict) and cam.get("device") and cam.get("controls"):
+            lines.append("webcam_enabled=1")
+            lines.append(f"webcam_device={cam['device']}")
+            keymap = {
+                "white_balance_automatic": "wb_auto",
+                "white_balance_temperature": "wb_temp",
+                "auto_exposure": "exposure_auto",
+                "exposure_time_absolute": "exposure_time",
+            }
+            allowed = {"brightness", "contrast", "saturation", "gamma", "sharpness",
+                       "white_balance_automatic", "white_balance_temperature",
+                       "auto_exposure", "exposure_time_absolute"}
+            for key, val in cam["controls"].items():
+                if key not in allowed:
+                    continue
+                lines.append(f"webcam_{keymap.get(key, key)}={int(val)}")
+        return "\n".join(lines) + "\n"
+
+    def sync_autoprofile(self):
+        """Ayarları root yardımcısına base64 olarak gönder; servis mtime ile alır."""
+        try:
+            text = self._build_autoprofile()
+        except (OSError, TypeError, ValueError) as exc:
+            self.log(f"Otomatik ayar dosyası hazırlanamadı: {exc}")
+            return
+        self._pending_autoprofile = text
+        if not self.helper.active:
+            return
+        payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        self.helper.send(["sysconfig", payload])
+        self._pending_autoprofile = None
+
+    def _save_last_settings(self, updates, manual=True):
+        self.last_settings.update(updates)
+        if not self.last_settings.get("name"):
+            self.last_settings["name"] = "Son ayarlar"
+        self.settings["last_settings"] = dict(self.last_settings)
+        self.settings["manual_mode"] = bool(manual)
+        if not save_settings(self.settings):
+            self.toast("Ayarlar dosyası yazılamadı", ok=False)
+        self.sync_autoprofile()
+
+    def _display_apply(self):
+        pct = self.display_slider.value()
+        self._cmd(["display", "brightness", pct], "Ekran parlaklığı")
+        self._save_last_settings({"name": "Manuel ekran", "brightness": pct}, manual=True)
 
     def tray_clean_ram(self):
         self.run_root(["cleanup", "ram"], None, cb=self._ram_done)
@@ -1605,6 +2059,7 @@ class Main(QMainWindow):
     def quit_app(self):
         self._quitting = True
         self._stop_anim()
+        self._webcam_stop_preview()
         try:
             if self.helper.state() != QProcess.ProcessState.NotRunning:
                 self.helper.write(b"quit\n")
@@ -1647,17 +2102,26 @@ class Main(QMainWindow):
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        names = ["  İzleme", "  Kontroller", "  Sistem", "  Çıktı"]
+        names = ["İzleme", "Kontroller", "Sistem", "Temizlik",
+                 "Güncelleme", "Çıktı"]
         for i, name in enumerate(names):
+            kind = NAV_ICON_KINDS[i]
             b = QPushButton(name)
             b.setObjectName("nav")
             b.setCheckable(True)
+            b.setIcon(nav_icon(kind, C_MUTED))
+            b.setIconSize(QSize(18, 18))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _=False, idx=i: self._go(idx))
+            b.toggled.connect(
+                lambda checked, btn=b, k=kind:
+                btn.setIcon(nav_icon(k, "#9cc2ff" if checked else C_MUTED)))
             self.nav_group.addButton(b, i)
             l.addWidget(b)
             if i == 0:
                 b.setChecked(True)
+            if i == 4:
+                self.nav_update_btn = b
         l.addStretch()
 
         self.autostart_cb = QCheckBox("Açılışta arka planda")
@@ -1678,14 +2142,24 @@ class Main(QMainWindow):
         return s
 
     def _go(self, idx):
+        # Kamera yalnızca webcam sayfasındayken açık kalsın (gizlilik).
+        if idx != 2:
+            self._webcam_stop_preview()
         self.stack.setCurrentIndex(idx)
-        self.page_title.setText(["Izleme", "Kontroller", "Sistem", "Çıktı"][idx])
+        self.page_title.setText(
+            ["Izleme", "Kontroller", "Sistem", "Temizlik", "Güncelleme",
+             "Çıktı"][idx])
         self.page_sub.setText([
             "Canlı durum — 2 saniyede bir yenilenir",
             "Fan, klavye ışığı, batarya, güç ve ekran denetimleri",
-            "Disk sağlığı ve seçmeli sistem temizliği",
+            "Disk sağlığı ve webcam ayarları — kamera önizlemesi",
+            "RAM, paket önbelleği, journal ve kullanıcı önbellekleri",
+            "GitHub sürümlerini denetle, indir ve kur",
             "Root işlemlerinin günlüğü",
         ][idx])
+        if (idx == 4 and not self._update_checked
+                and not self._update_busy):
+            QTimer.singleShot(350, lambda: self._update_check(silent=False))
 
     # ---------- Izleme ----------
     def _page_monitor(self):
@@ -1854,16 +2328,18 @@ class Main(QMainWindow):
         morep.clicked.connect(self._profile_menu)
         prof.addWidget(morep)
         fl.addLayout(prof)
-        self.auto_profile_cb = QCheckBox("AC/pil değişiminde otomatik profil")
-        self.auto_profile_cb.setToolTip("Güç kaynağı değiştiğinde profil listesindeki "
-                                        "AC/pil atamalarını uygular (uygulama açıkken)")
+        self.auto_profile_cb = QCheckBox("Açılışta ve AC/pilde otomatik uygula")
+        self.auto_profile_cb.setToolTip("Root servisi kuruluysa bilgisayar açılışında, "
+                                        "AC/pil değişiminde ve webcam ayarlarında "
+                                        "kaydedilmiş ayarları uygular.")
         self.auto_profile_cb.setChecked(bool(self.settings.get("auto_profiles", True)))
         self.auto_profile_cb.toggled.connect(self._toggle_auto_profiles)
         fl.addWidget(self.auto_profile_cb)
         hint = self._hint("Fiziksel profil tuşu profiller arasında dolaşır. "
                           "Profil listesine sağ tıklayarak düzenleyebilirsiniz. "
                           "Eğri profilleri 70 °C üstünde en az %40 fan uygular. "
-                          "Açılışta otomatik çalışması için “Açılışta arka planda”yı açın.")
+                          "Ayarlar kaydedilir; “monster-ctrl-profile” servisi "
+                          "açılışta ve AC/pil değişiminde otomatik uygular.")
         fl.addWidget(hint)
         self.fan_slider.valueChanged.connect(lambda v: self.fan_val.setText(f"%{v}"))
         grid.addWidget(fan, 0, 0)
@@ -2093,8 +2569,7 @@ class Main(QMainWindow):
         sb = QPushButton("Uygula")
         sb.setObjectName("primary")
         sb.setCursor(Qt.CursorShape.PointingHandCursor)
-        sb.clicked.connect(lambda: self._cmd(
-            ["display", "brightness", self.display_slider.value()], "Ekran parlaklığı"))
+        sb.clicked.connect(self._display_apply)
         srow.addWidget(sb)
         sl.addLayout(srow)
         sl.addWidget(self._hint("Parlaklık profillere de kaydedilebilir; "
@@ -2142,6 +2617,402 @@ class Main(QMainWindow):
             "thumb": os.path.expanduser("~/.cache/thumbnails"),
             "cache": os.path.expanduser("~/.cache"),
         }.get(key)
+
+    # ---------- webcam ----------
+    CAM_SLIDERS = (
+        ("brightness", "Parlaklık"),
+        ("contrast", "Kontrast"),
+        ("saturation", "Doygunluk"),
+        ("gamma", "Gamma"),
+        ("sharpness", "Keskinlik"),
+    )
+
+    def _webcam_card(self):
+        card = Card()
+        l = QVBoxLayout(card)
+        l.setContentsMargins(18, 16, 18, 16)
+        l.setSpacing(8)
+        l.addWidget(make_title("WEBCAM"))
+
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        devlab = QLabel("Kamera")
+        devlab.setObjectName("muted")
+        top.addWidget(devlab)
+        self.cam_combo = QComboBox()
+        self.cam_combo.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                     QSizePolicy.Policy.Fixed)
+        self.cam_combo.currentIndexChanged.connect(self._webcam_device_changed)
+        top.addWidget(self.cam_combo, 1)
+        self.cam_refresh_btn = QPushButton("Yenile")
+        self.cam_refresh_btn.setObjectName("segS")
+        self.cam_refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cam_refresh_btn.clicked.connect(self._webcam_refresh)
+        top.addWidget(self.cam_refresh_btn)
+        l.addLayout(top)
+
+        self.cam_status = QLabel("kamera aranıyor…")
+        self.cam_status.setObjectName("muted")
+        l.addWidget(self.cam_status)
+
+        self.cam_preview = CameraPreview()
+        l.addWidget(self.cam_preview)
+
+        self.cam_sliders = {}
+        self.cam_vals = {}
+        for key, label in self.CAM_SLIDERS:
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            lab = QLabel(label)
+            lab.setFixedWidth(82)
+            lab.setObjectName("muted")
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(0, 100)
+            slider.setValue(50)
+            val = QLabel("–")
+            val.setFixedWidth(48)
+            val.setAlignment(Qt.AlignmentFlag.AlignRight |
+                             Qt.AlignmentFlag.AlignVCenter)
+            slider.valueChanged.connect(
+                lambda v, w=val: w.setText(str(v)))
+            row.addWidget(lab)
+            row.addWidget(slider, 1)
+            row.addWidget(val)
+            l.addLayout(row)
+            self.cam_sliders[key] = slider
+            self.cam_vals[key] = val
+
+        wbrow = QHBoxLayout()
+        wbrow.setSpacing(10)
+        self.cam_wb_auto = QCheckBox("Otomatik beyaz dengesi")
+        self.cam_wb_auto.toggled.connect(self._webcam_wb_toggled)
+        wbrow.addWidget(self.cam_wb_auto)
+        wbrow.addStretch()
+        l.addLayout(wbrow)
+
+        temrow = QHBoxLayout()
+        temrow.setSpacing(10)
+        templab = QLabel("WB sıcaklık")
+        templab.setFixedWidth(82)
+        templab.setObjectName("muted")
+        self.cam_wb_temp = QSlider(Qt.Orientation.Horizontal)
+        self.cam_wb_temp.setRange(2800, 6500)
+        self.cam_wb_temp.setValue(4600)
+        self.cam_wb_val = QLabel("–")
+        self.cam_wb_val.setFixedWidth(48)
+        self.cam_wb_val.setAlignment(Qt.AlignmentFlag.AlignRight |
+                                     Qt.AlignmentFlag.AlignVCenter)
+        self.cam_wb_temp.valueChanged.connect(
+            lambda v: self.cam_wb_val.setText(f"{v}K"))
+        temrow.addWidget(templab)
+        temrow.addWidget(self.cam_wb_temp, 1)
+        temrow.addWidget(self.cam_wb_val)
+        l.addLayout(temrow)
+
+        row = QHBoxLayout()
+        self.cam_preview_btn = QPushButton("Kamerayı aç")
+        self.cam_preview_btn.setObjectName("ghost")
+        self.cam_preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cam_preview_btn.clicked.connect(self._webcam_toggle_preview)
+        row.addWidget(self.cam_preview_btn)
+        row.addStretch()
+        self.cam_apply_btn = QPushButton("Uygula")
+        self.cam_apply_btn.setObjectName("primary")
+        self.cam_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cam_apply_btn.clicked.connect(lambda: self._webcam_apply())
+        row.addWidget(self.cam_apply_btn)
+        l.addLayout(row)
+        l.addWidget(self._hint("Önizleme ile ayarı canlı görün. Kamera ayarları kaydedilir; "
+                               "root servisi kuruluysa bilgisayar açılışında da "
+                               "otomatik uygulanır."))
+
+        self._cam_devices = {}
+        self._cam_ctrls = {}
+        self._cam_camera = None
+        self._cam_session = None
+        self._cam_sink = None
+        self._cam_preview_active = False
+        if not V4L2_CTL:
+            self.cam_status.setText("v4l2-ctl bulunamadı; webcam denetimi devre dışı.")
+            self.cam_apply_btn.setDisabled(True)
+            self.cam_refresh_btn.setDisabled(True)
+            self.cam_preview_btn.setDisabled(True)
+        if not MULTIMEDIA_OK:
+            self.cam_preview_btn.setDisabled(True)
+            self.cam_preview_btn.setToolTip("QtMultimedia bulunamadı; kamera önizlemesi kapalı.")
+            self.cam_preview.setText("Kamera önizlemesi için QtMultimedia gerekli")
+        if V4L2_CTL:
+            QTimer.singleShot(250, self._webcam_refresh)
+        return card
+
+    def _webcam_set_controls_enabled(self, enabled):
+        for slider in self.cam_sliders.values():
+            slider.setEnabled(enabled)
+        self.cam_wb_auto.setEnabled(enabled)
+        self.cam_wb_temp.setEnabled(enabled and not self.cam_wb_auto.isChecked())
+        self.cam_apply_btn.setEnabled(enabled)
+        self.cam_preview_btn.setEnabled(enabled and MULTIMEDIA_OK)
+        if not enabled:
+            self._webcam_stop_preview()
+
+    def _webcam_refresh(self):
+        if not V4L2_CTL:
+            return
+        if self._cam_preview_active:
+            self._webcam_stop_preview()
+        devices = v4l2_devices()
+        self._cam_devices = {dev: ctrls for dev, ctrls in devices}
+        saved = self.settings.get("webcam", {})
+        saved_dev = saved.get("device") if isinstance(saved, dict) else None
+        self.cam_combo.blockSignals(True)
+        self.cam_combo.clear()
+        for dev, _ctrls in devices:
+            self.cam_combo.addItem(dev, dev)
+        if saved_dev:
+            idx = self.cam_combo.findData(saved_dev)
+            if idx >= 0:
+                self.cam_combo.setCurrentIndex(idx)
+        self.cam_combo.blockSignals(False)
+        if not devices:
+            self.cam_status.setText("Kamera bulunamadı.")
+            self._webcam_set_controls_enabled(False)
+            return
+        self.cam_status.setText(f"{len(devices)} kamera · {self.cam_combo.currentData()}")
+        self._webcam_load_device()
+
+    def _webcam_device_changed(self, _idx):
+        if not self._cam_devices:
+            return
+        if self._cam_preview_active:
+            self._webcam_stop_preview()
+        self.cam_status.setText(f"{len(self._cam_devices)} kamera · "
+                                f"{self.cam_combo.currentData()}")
+        self._webcam_load_device()
+
+    def _webcam_load_device(self):
+        dev = self.cam_combo.currentData()
+        if not dev:
+            self._webcam_set_controls_enabled(False)
+            return
+        ctrls = self._cam_devices.get(dev)
+        if ctrls is None:
+            ctrls = v4l2_controls(dev)
+            if ctrls:
+                self._cam_devices[dev] = ctrls
+        self._cam_ctrls = ctrls or {}
+        saved = self.settings.get("webcam", {})
+        saved_ctrls = (saved.get("controls", {})
+                       if isinstance(saved, dict) and saved.get("device") == dev
+                       else {})
+
+        for key, slider in self.cam_sliders.items():
+            ctrl = self._cam_ctrls.get(key)
+            if not ctrl or "min" not in ctrl or "max" not in ctrl:
+                slider.setEnabled(False)
+                self.cam_vals[key].setText("–")
+                continue
+            lo, hi = int(ctrl["min"]), int(ctrl["max"])
+            step = max(1, int(ctrl.get("step", 1)))
+            value = saved_ctrls.get(key, ctrl.get("value", ctrl.get("default", lo)))
+            value = max(lo, min(hi, int(value)))
+            slider.blockSignals(True)
+            slider.setRange(lo, hi)
+            slider.setSingleStep(step)
+            slider.setValue(value)
+            slider.blockSignals(False)
+            slider.setEnabled(True)
+            self.cam_vals[key].setText(str(value))
+
+        wb = self._cam_ctrls.get("white_balance_automatic")
+        if wb:
+            value = saved_ctrls.get("white_balance_automatic",
+                                    wb.get("value", wb.get("default", 1)))
+            self.cam_wb_auto.blockSignals(True)
+            self.cam_wb_auto.setChecked(bool(value))
+            self.cam_wb_auto.blockSignals(False)
+            self.cam_wb_auto.setEnabled(True)
+        else:
+            self.cam_wb_auto.setChecked(False)
+            self.cam_wb_auto.setEnabled(False)
+
+        temp = self._cam_ctrls.get("white_balance_temperature")
+        if temp and "min" in temp and "max" in temp:
+            lo, hi = int(temp["min"]), int(temp["max"])
+            value = saved_ctrls.get("white_balance_temperature",
+                                    temp.get("value", temp.get("default", lo)))
+            value = max(lo, min(hi, int(value)))
+            self.cam_wb_temp.blockSignals(True)
+            self.cam_wb_temp.setRange(lo, hi)
+            if "step" in temp:
+                self.cam_wb_temp.setSingleStep(max(1, int(temp["step"])))
+            self.cam_wb_temp.setValue(value)
+            self.cam_wb_temp.blockSignals(False)
+            self.cam_wb_val.setText(f"{value}K")
+            self.cam_wb_temp.setEnabled(not self.cam_wb_auto.isChecked())
+        else:
+            self.cam_wb_temp.setEnabled(False)
+            self.cam_wb_val.setText("–")
+        self.cam_apply_btn.setEnabled(True)
+        self.cam_preview_btn.setEnabled(MULTIMEDIA_OK)
+
+    def _webcam_wb_toggled(self, checked):
+        self.cam_wb_temp.setEnabled(not checked and "white_balance_temperature"
+                                    in self._cam_ctrls)
+
+    def _webcam_payload(self):
+        controls = {}
+        for key, slider in self.cam_sliders.items():
+            if slider.isEnabled() and key in self._cam_ctrls:
+                controls[key] = slider.value()
+        if self.cam_wb_auto.isEnabled() and \
+                "white_balance_automatic" in self._cam_ctrls:
+            controls["white_balance_automatic"] = 1 if self.cam_wb_auto.isChecked() else 0
+        if (not self.cam_wb_auto.isChecked()
+                and self.cam_wb_temp.isEnabled()
+                and "white_balance_temperature" in self._cam_ctrls):
+            controls["white_balance_temperature"] = self.cam_wb_temp.value()
+        return controls
+
+    def _webcam_apply(self, silent=False):
+        dev = self.cam_combo.currentData()
+        controls = self._webcam_payload()
+        if not dev or not controls:
+            if not silent:
+                self.toast("Uygulanacak webcam ayarı yok", ok=False)
+            return
+        rc, out = v4l2_set(dev, controls)
+        if rc != 0:
+            self.log(f"[Webcam] {out or 'v4l2-ctl hata verdi'}")
+            if not silent:
+                self.toast("Webcam ayarları uygulanamadı", ok=False)
+            return
+        self.settings["webcam"] = {"device": dev, "controls": controls}
+        save_settings(self.settings)
+        self.sync_autoprofile()
+        if not silent:
+            self.toast(f"Webcam ayarları uygulandı · {dev}")
+
+    def _webcam_apply_saved(self):
+        saved = self.settings.get("webcam")
+        if not isinstance(saved, dict) or not saved.get("device"):
+            return
+        if not V4L2_CTL:
+            return
+        if not self._cam_devices:
+            self._webcam_refresh()
+        idx = self.cam_combo.findData(saved["device"])
+        if idx < 0:
+            return
+        if self.cam_combo.currentIndex() != idx:
+            self.cam_combo.setCurrentIndex(idx)
+        self._webcam_load_device()
+        self._webcam_apply(silent=True)
+
+    # ---------- webcam önizleme (QtMultimedia) ----------
+    def _webcam_qt_device(self, dev):
+        if not MULTIMEDIA_OK:
+            return None
+        try:
+            inputs = QMediaDevices.videoInputs()
+        except (RuntimeError, OSError):
+            return None
+        for cam in inputs:
+            try:
+                cid = bytes(cam.id()).decode("utf-8", "ignore")
+            except (TypeError, ValueError):
+                cid = ""
+            if cid == dev:
+                return cam
+        idx = self.cam_combo.currentIndex()
+        return inputs[idx] if 0 <= idx < len(inputs) else None
+
+    def _webcam_toggle_preview(self):
+        if self._cam_preview_active:
+            self._webcam_stop_preview()
+        else:
+            self._webcam_start_preview()
+
+    def _webcam_start_preview(self):
+        if not MULTIMEDIA_OK:
+            self.toast("Kamera önizlemesi için QtMultimedia gerekli", ok=False)
+            return
+        if self._cam_preview_active:
+            return
+        dev = self.cam_combo.currentData()
+        if not dev:
+            self.toast("Önizleme için kamera bulunamadı", ok=False)
+            return
+        device = self._webcam_qt_device(dev)
+        if device is None:
+            self.toast("Kamera QtMultimedia tarafından bulunamadı", ok=False)
+            return
+        try:
+            camera = QCamera(device, self)
+            session = QMediaCaptureSession(self)
+            sink = QVideoSink(self)
+            session.setCamera(camera)
+            session.setVideoSink(sink)
+            sink.videoFrameChanged.connect(self._webcam_frame)
+            camera.errorOccurred.connect(self._webcam_cam_error)
+            self._cam_camera = camera
+            self._cam_session = session
+            self._cam_sink = sink
+            self._cam_preview_active = True
+            self.cam_preview_btn.setText("Kamerayı kapat")
+            self.cam_preview.setText("Kamera başlatılıyor…")
+            camera.start()
+        except (RuntimeError, TypeError, ValueError) as exc:
+            self._webcam_stop_preview()
+            self.cam_preview.setText("Kamera açılamadı")
+            self.cam_status.setText(f"Kamera hatası: {exc}")
+            self.toast("Kamera açılamadı", ok=False)
+
+    def _webcam_stop_preview(self):
+        if not getattr(self, "_cam_preview_active", False):
+            return
+        camera = getattr(self, "_cam_camera", None)
+        try:
+            if camera is not None:
+                camera.stop()
+        except (RuntimeError, OSError):
+            pass
+        for obj in (getattr(self, "_cam_sink", None),
+                    getattr(self, "_cam_session", None),
+                    camera):
+            if obj is not None:
+                try:
+                    obj.deleteLater()
+                except RuntimeError:
+                    pass
+        self._cam_camera = None
+        self._cam_session = None
+        self._cam_sink = None
+        self._cam_preview_active = False
+        self.cam_preview_btn.setText("Kamerayı aç")
+        self.cam_preview.setPixmap(QPixmap())
+        self.cam_preview.setText("Kamera kapalı")
+
+    def _webcam_cam_error(self, *_args):
+        detail = _args[-1] if _args else "bilinmeyen hata"
+        self._webcam_stop_preview()
+        self.cam_preview.setText("Kamera açılamadı")
+        self.cam_status.setText(f"Kamera hatası: {detail}")
+
+    def _webcam_frame(self, frame):
+        if not self._cam_preview_active or not frame.isValid():
+            return
+        image = frame.toImage()
+        if image.isNull():
+            return
+        pix = QPixmap.fromImage(image)
+        if pix.isNull():
+            return
+        rect = self.cam_preview.contentsRect()
+        w = max(1, rect.width())
+        h = max(1, rect.height())
+        self.cam_preview.setPixmap(
+            pix.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation))
 
     def _page_system(self):
         page = QWidget()
@@ -2194,27 +3065,77 @@ class Main(QMainWindow):
         top.addWidget(sp, 1)
         l.addLayout(top)
 
+        l.addWidget(self._webcam_card())
+        l.addStretch()
+        return self._wrap_scroll(page)
+
+    # ---------- Temizlik ----------
+    def _page_cleanup(self):
+        page = QWidget()
+        page.setObjectName("pageBody")
+        l = QVBoxLayout(page)
+        l.setContentsMargins(0, 0, 0, 0)
+        l.setSpacing(14)
+
+        stats = QHBoxLayout()
+        stats.setSpacing(14)
+        stat_data = [
+            ("TEMİZLENEBİLİR", "–", "Tara ile hesaplanır"),
+            ("SON TARAMA", "Henüz taranmadı", "Yerel saat"),
+            ("ROOT BAĞLANTISI", "Root pasif", "Paket/journal için gerekir"),
+        ]
+        stat_values = []
+        for title, value, sub in stat_data:
+            card = Card()
+            cl2 = QVBoxLayout(card)
+            cl2.setContentsMargins(18, 15, 18, 15)
+            cl2.setSpacing(3)
+            cl2.addWidget(make_title(title))
+            val = QLabel(value)
+            val.setStyleSheet("font-size: 22px; font-weight: 700;")
+            cl2.addWidget(val)
+            hint = QLabel(sub)
+            hint.setObjectName("muted")
+            cl2.addWidget(hint)
+            stats.addWidget(card, 1)
+            stat_values.append(val)
+        self.clean_big_total, self.clean_last, self.clean_root_state = stat_values
+        l.addLayout(stats)
+
         cc = Card()
         cl = QVBoxLayout(cc)
-        cl.setContentsMargins(18, 16, 18, 16)
-        cl.setSpacing(8)
-        cl.addWidget(make_title("SİSTEM TEMİZLEYİCİ"))
-        cl.addWidget(self._hint("Temizlenecek öğeleri seçin; boyutlar 'Tara' ile hesaplanır. "
-                                "Paket önbelleği ve journal için root bağlantısı gerekir."))
+        cl.setContentsMargins(22, 20, 22, 20)
+        cl.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.addWidget(make_title("SİSTEM TEMİZLEYİCİ"))
+        head.addStretch()
+        ram = QPushButton("RAM önbelleğini boşalt")
+        ram.setObjectName("ghost")
+        ram.setCursor(Qt.CursorShape.PointingHandCursor)
+        ram.clicked.connect(self.clean_ram)
+        head.addWidget(ram)
+        cl.addLayout(head)
+        cl.addWidget(self._hint("Temizlenecek öğeleri seçin; boyutlar “Tara” ile hesaplanır. "
+                                "Paket önbelleği, journal ve sistem önbellekleri için root "
+                                "bağlantısı gerekir. Kullanıcı önbellekleri root gerektirmez."))
+
         self.clean_rows = {}
         for key, label, _kind in self.CLEAN_ITEMS:
             r = QHBoxLayout()
+            r.setSpacing(10)
             cb = QCheckBox(label)
             cb.setChecked(True)
             cb.setCursor(Qt.CursorShape.PointingHandCursor)
             size = QLabel("–")
             size.setObjectName("muted")
-            r.addWidget(cb)
-            r.addStretch()
+            size.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            r.addWidget(cb, 1)
             r.addWidget(size)
             cl.addLayout(r)
             self.clean_rows[key] = (cb, size)
-        cl.addStretch()
+
+        cl.addSpacing(6)
         brow = QHBoxLayout()
         self.clean_total = QLabel("Toplam: –")
         self.clean_total.setObjectName("muted")
@@ -2231,7 +3152,36 @@ class Main(QMainWindow):
         brow.addWidget(scan)
         brow.addWidget(run)
         cl.addLayout(brow)
-        l.addWidget(cc, 1)
+
+        l.addWidget(cc)
+
+        quick = Card()
+        ql = QVBoxLayout(quick)
+        ql.setContentsMargins(22, 18, 22, 18)
+        ql.setSpacing(10)
+        ql.addWidget(make_title("HIZLI İŞLEMLER"))
+        ql.addWidget(self._hint("Tüm listeyi işaretlemeden yalnızca belirli bir grubu "
+                                "temizleyin."))
+        qrow = QHBoxLayout()
+        qrow.setSpacing(10)
+        for label, keys in (
+                ("Kullanıcı önbellekleri", ["cache", "thumb", "trash"]),
+                ("Paket önbelleği + journal", ["pkg", "journal"]),
+                ("Sistem önbellekleri", ["syscache"])):
+            btn = QPushButton(label)
+            btn.setObjectName("ghost")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(
+                lambda _=False, k=list(keys): self.run_cleanup(keys=k))
+            qrow.addWidget(btn)
+        qrow.addStretch()
+        ql.addLayout(qrow)
+        l.addWidget(quick)
+
+        l.addWidget(self._hint("İpucu: Temizlik sırasında oyun/uygulama kapanmaz; sadece "
+                               "önbellek ve log dosyaları temizlenir. Sistem temizleyiciyi "
+                               "tray menüsünden de çalıştırabilirsiniz."))
+        l.addStretch()
         QTimer.singleShot(1500, self.scan_cleanup)
         return self._wrap_scroll(page)
 
@@ -2247,7 +3197,13 @@ class Main(QMainWindow):
             else:
                 sizes[key] = dir_bytes(self._clean_path(key))
             self.clean_rows[key][1].setText(human_bytes(sizes[key]))
-        self.clean_total.setText(f"Toplam: {human_bytes(sum(sizes.values()))}")
+        total = sum(sizes.values())
+        shown = human_bytes(total)
+        self.clean_total.setText(f"Toplam: {shown}")
+        if hasattr(self, "clean_big_total"):
+            self.clean_big_total.setText(shown)
+        if hasattr(self, "clean_last"):
+            self.clean_last.setText(time.strftime("%H:%M"))
 
     ROOT_CLEAN = {"pkg": "pkgcache", "journal": "journal", "syscache": "syscache"}
 
@@ -2313,6 +3269,536 @@ class Main(QMainWindow):
         self.toast(msg)
         self.refresh()
 
+    # ---------- Güncelleme ----------
+    def _page_update(self):
+        page = QWidget()
+        page.setObjectName("pageBody")
+        l = QVBoxLayout(page)
+        l.setContentsMargins(0, 0, 0, 0)
+        l.setSpacing(14)
+
+        card = Card()
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(22, 20, 22, 20)
+        cl.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.addWidget(make_title("GITHUB GÜNCELLEME"))
+        head.addStretch()
+        self.upd_badge = QLabel(f"v{APP_VERSION}")
+        self.upd_badge.setObjectName("muted")
+        head.addWidget(self.upd_badge)
+        cl.addLayout(head)
+
+        self.upd_current = QLabel(f"Kurulu sürüm: v{APP_VERSION}")
+        self.upd_current.setStyleSheet("font-size: 18px; font-weight: 700;")
+        cl.addWidget(self.upd_current)
+        self.upd_status = QLabel("Henüz güncelleme kontrolü yapılmadı.")
+        self.upd_status.setObjectName("muted")
+        self.upd_status.setWordWrap(True)
+        cl.addWidget(self.upd_status)
+
+        row = QHBoxLayout()
+        self.upd_auto = QCheckBox("Açılışta otomatik kontrol et")
+        self.upd_auto.setChecked(bool(self.settings.get("auto_update_check", True)))
+        self.upd_auto.toggled.connect(self._toggle_auto_update)
+        row.addWidget(self.upd_auto)
+        row.addStretch()
+        self.upd_open_btn = QPushButton("GitHub sürümleri")
+        self.upd_open_btn.setObjectName("ghost")
+        self.upd_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.upd_open_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(RELEASES_PAGE)))
+        row.addWidget(self.upd_open_btn)
+        self.upd_check_btn = QPushButton("Güncelleme kontrol et")
+        self.upd_check_btn.setObjectName("primary")
+        self.upd_check_btn.setIcon(nav_icon("update", "#ffffff"))
+        self.upd_check_btn.setIconSize(QSize(16, 16))
+        self.upd_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.upd_check_btn.clicked.connect(
+            lambda: self._update_check(silent=False))
+        row.addWidget(self.upd_check_btn)
+        cl.addLayout(row)
+
+        self.upd_info = QLabel("GitHub üzerindeki en son sürüm denetlenecek.")
+        self.upd_info.setObjectName("muted")
+        self.upd_info.setWordWrap(True)
+        cl.addWidget(self.upd_info)
+
+        self.upd_notes = QPlainTextEdit()
+        self.upd_notes.setReadOnly(True)
+        self.upd_notes.setPlaceholderText("Sürüm notları burada görünecek.")
+        self.upd_notes.setMaximumHeight(150)
+        cl.addWidget(self.upd_notes)
+
+        self.upd_progress = QProgressBar()
+        self.upd_progress.setRange(0, 100)
+        self.upd_progress.setValue(0)
+        self.upd_progress.setTextVisible(True)
+        self.upd_progress.hide()
+        cl.addWidget(self.upd_progress)
+        self.upd_detail = QLabel("")
+        self.upd_detail.setObjectName("muted")
+        self.upd_detail.setWordWrap(True)
+        self.upd_detail.hide()
+        cl.addWidget(self.upd_detail)
+
+        actions = QHBoxLayout()
+        self.upd_install_btn = QPushButton("İndir ve kur")
+        self.upd_install_btn.setObjectName("primary")
+        self.upd_install_btn.setIcon(nav_icon("update", "#ffffff"))
+        self.upd_install_btn.setIconSize(QSize(16, 16))
+        self.upd_install_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.upd_install_btn.setDisabled(True)
+        self.upd_install_btn.clicked.connect(self._update_install)
+        actions.addWidget(self.upd_install_btn)
+        self.upd_restart_btn = QPushButton("Yeniden başlat")
+        self.upd_restart_btn.setObjectName("ghost")
+        self.upd_restart_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.upd_restart_btn.hide()
+        self.upd_restart_btn.clicked.connect(self._restart_app)
+        actions.addWidget(self.upd_restart_btn)
+        actions.addStretch()
+        cl.addLayout(actions)
+
+        cl.addWidget(self._hint("Kurulum, dağıtımınıza uygun paketle (deb/rpm/pacman) "
+                                "veya portable arşivle yapılır. İndirilen dosya "
+                                "SHA256SUMS-linux ile doğrulanır; yönetici parolası "
+                                "yalnızca kurulum sırasında bir kez sorulur."))
+        l.addWidget(card)
+        l.addWidget(self._hint("Güncelleme kontrolü GitHub Releases API kullanır. "
+                               "Otomatik kontrol yalnızca açılışta çalışır; kurulumu "
+                               "her zaman siz başlatırsınız."))
+        l.addStretch()
+        return self._wrap_scroll(page)
+
+    def _toggle_auto_update(self, checked):
+        self.settings["auto_update_check"] = bool(checked)
+        save_settings(self.settings)
+
+    def _set_update_badge(self, text, kind="muted"):
+        self.upd_badge.setText(text)
+        self.upd_badge.setObjectName(
+            "pillInfo" if kind == "info" else
+            "pillOk" if kind == "ok" else "muted")
+        self.upd_badge.style().unpolish(self.upd_badge)
+        self.upd_badge.style().polish(self.upd_badge)
+
+    def _mark_update(self, available, version=""):
+        self._update_available = bool(available)
+        if self.nav_update_btn:
+            self.nav_update_btn.setText("Güncelleme •" if available else "Güncelleme")
+            self.nav_update_btn.setToolTip(
+                f"Yeni sürüm v{version} hazır" if available
+                else "Güncelleme kontrol et")
+        if self._tray_update_action:
+            self._tray_update_action.setText(
+                f"Güncelleme • v{version}" if available
+                else "Güncelleme kontrol et")
+        if available:
+            self._set_update_badge("YENİ SÜRÜM", "info")
+            self.upd_install_btn.show()
+        else:
+            self._set_update_badge("GÜNCEL" if version else "—", "ok")
+
+    def _pick_update_asset(self, assets):
+        family = distro_family()
+        prefer = {"debian": "deb", "rpm": "rpm", "arch": "arch"}.get(
+            family, "portable")
+        candidates = []
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            kind = update_asset_kind(asset.get("name", ""))
+            if kind and asset.get("browser_download_url"):
+                candidates.append((kind, asset))
+        for kind in (prefer, "portable"):
+            for candidate_kind, asset in candidates:
+                if candidate_kind == kind:
+                    return asset
+        return None
+
+    def _net_request(self, url):
+        req = QNetworkRequest(QUrl(url))
+        req.setHeader(QNetworkRequest.KnownHeaders.UserAgentHeader,
+                      f"OpenMonster/{APP_VERSION}")
+        req.setAttribute(
+            QNetworkRequest.Attribute.RedirectPolicyAttribute,
+            QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy)
+        return req
+
+    def _update_check(self, silent=False):
+        if self._update_busy or self._update_reply is not None:
+            return
+        self._update_busy = True
+        self._update_checked = True
+        self.upd_check_btn.setDisabled(True)
+        self.upd_install_btn.setDisabled(True)
+        self.upd_status.setText("GitHub sürümleri kontrol ediliyor…")
+        self.upd_detail.hide()
+        self.upd_progress.hide()
+        self._set_update_badge("KONTROL…", "muted")
+        reply = self._net.get(self._net_request(RELEASES_API))
+        self._update_reply = reply
+        reply.finished.connect(
+            lambda r=reply, s=silent: self._update_check_done(r, s))
+
+    def _update_check_done(self, reply, silent):
+        error = reply.error()
+        error_text = reply.errorString()
+        payload = bytes(reply.readAll()).decode("utf-8", "replace")
+        reply.deleteLater()
+        self._update_reply = None
+        self._update_busy = False
+        self.upd_check_btn.setEnabled(True)
+        if error != QNetworkReply.NetworkError.NoError:
+            self._update_checked = False
+            self.upd_status.setText(f"Kontrol başarısız: {error_text}")
+            self.upd_detail.setText("İnternet bağlantınızı ve GitHub erişimini "
+                                    "kontrol edin.")
+            self.upd_detail.show()
+            self._set_update_badge("HATA", "muted")
+            self.log(f"Güncelleme kontrolü başarısız: {error_text}")
+            if not silent:
+                self.toast("Güncelleme kontrolü başarısız", ok=False)
+            return
+        try:
+            info = json.loads(payload)
+            if not isinstance(info, dict):
+                raise ValueError("geçersiz yanıt")
+        except (ValueError, TypeError) as exc:
+            self._update_checked = False
+            self.upd_status.setText("GitHub yanıtı okunamadı.")
+            self.upd_detail.setText(str(exc))
+            self.upd_detail.show()
+            self._set_update_badge("HATA", "muted")
+            self.log(f"Güncelleme yanıtı okunamadı: {exc}")
+            return
+
+        self.settings["last_update_check"] = int(time.time())
+        save_settings(self.settings)
+        tag = str(info.get("tag_name") or info.get("name") or "")
+        latest = parse_version(tag)
+        if not latest:
+            self._update_checked = False
+            self.upd_status.setText("Sürüm bilgisi okunamadı.")
+            self.upd_detail.setText(f"GitHub etiketi: {tag or '—'}")
+            self.upd_detail.show()
+            self._set_update_badge("HATA", "muted")
+            return
+
+        self._update_meta = info
+        notes = str(info.get("body") or "").strip()
+        self.upd_notes.setPlainText(notes or "Bu sürüm için not girilmemiş.")
+        current = parse_version(APP_VERSION)
+        assets = info.get("assets") if isinstance(info.get("assets"), list) else []
+        checksums = next(
+            (a for a in assets if isinstance(a, dict)
+             and a.get("name") == "SHA256SUMS-linux"), None)
+        self._update_checksums_url = (
+            checksums.get("browser_download_url") if checksums else None)
+
+        if latest <= current:
+            self._update_asset = None
+            self._update_available = False
+            self.upd_status.setText(
+                f"En güncel sürümü kullanıyorsunuz (v{APP_VERSION}).")
+            self.upd_info.setText(
+                f"Kurulu sürüm: v{APP_VERSION}  ·  GitHub: {tag}")
+            self.upd_install_btn.setDisabled(True)
+            self._mark_update(False, tag)
+            if not silent:
+                self.toast("Güncelleme yok; sürümünüz güncel")
+            return
+
+        self._update_asset = self._pick_update_asset(assets)
+        if self._update_asset:
+            size = human_bytes(self._update_asset.get("size") or 0)
+            self.upd_info.setText(
+                f"Yeni sürüm: {tag}  ·  paket: {self._update_asset.get('name')}"
+                f"  ·  {size}")
+            self.upd_install_btn.setEnabled(True)
+            self.upd_status.setText(
+                f"Yeni sürüm {tag} hazır. İndirip kurabilirsiniz.")
+        else:
+            self.upd_info.setText(
+                f"Yeni sürüm: {tag}  ·  Bu dağıtım için uygun paket bulunamadı.")
+            self.upd_status.setText(
+                "GitHub sürümünde bu sistem için paket yok; bağlantıdan "
+                "portable arşivi elle indirebilirsiniz.")
+            self.upd_install_btn.setDisabled(True)
+        self._mark_update(True, tag)
+        msg = f"Yeni sürüm {tag} mevcut"
+        if silent:
+            self.log(msg)
+            self.toast(msg)
+        else:
+            self.toast(msg)
+
+    def _update_download_progress(self, received, total):
+        if total > 0:
+            pct = int(received * 100 / total)
+            self.upd_progress.setRange(0, 100)
+            self.upd_progress.setValue(pct)
+            self.upd_detail.setText(
+                f"İndiriliyor… {human_bytes(received)} / {human_bytes(total)}")
+        else:
+            self.upd_progress.setRange(0, 0)
+            self.upd_detail.setText(f"İndiriliyor… {human_bytes(received)}")
+        self.upd_detail.show()
+
+    def _update_install(self):
+        if self._update_busy:
+            return
+        if not self._update_available or not self._update_asset:
+            self.toast("Önce güncelleme kontrolü yapın", ok=False)
+            return
+        if not shutil.which("pkexec"):
+            self.upd_status.setText("pkexec bulunamadı; otomatik kurulum yapılamıyor.")
+            self.upd_detail.setText(
+                "Paketi GitHub sürümlerinden indirip terminalde paket "
+                "yöneticinizle kurabilirsiniz.")
+            self.upd_detail.show()
+            self.toast("Kurulum için pkexec gerekli", ok=False)
+            return
+        name = str(self._update_asset.get("name") or "")
+        suffix = (".pkg.tar.zst" if name.endswith(".pkg.tar.zst") else
+                  ".tar.gz" if name.endswith(".tar.gz") else
+                  ".deb" if name.endswith(".deb") else
+                  ".rpm" if name.endswith(".rpm") else ".bin")
+        self._update_cleanup_tmp()
+        try:
+            fd, path = tempfile.mkstemp(prefix="openmonster-update-",
+                                        suffix=suffix)
+            os.close(fd)
+        except OSError as exc:
+            self._update_fail(f"Geçici dosya oluşturulamadı: {exc}")
+            return
+        self._update_tmp = path
+        self._update_busy = True
+        self.upd_check_btn.setDisabled(True)
+        self.upd_install_btn.setDisabled(True)
+        self.upd_restart_btn.hide()
+        self.upd_status.setText(f"{name} indiriliyor…")
+        self.upd_progress.setRange(0, 100)
+        self.upd_progress.setValue(0)
+        self.upd_progress.show()
+        self.upd_detail.setText("İndirme başlatılıyor…")
+        self.upd_detail.show()
+        self.log(f"Güncelleme indiriliyor: {name}")
+        reply = self._net.get(
+            self._net_request(self._update_asset["browser_download_url"]))
+        self._download_reply = reply
+        reply.downloadProgress.connect(self._update_download_progress)
+        reply.finished.connect(lambda r=reply: self._update_download_done(r))
+
+    def _update_download_done(self, reply):
+        error = reply.error()
+        error_text = reply.errorString()
+        data = bytes(reply.readAll())
+        reply.deleteLater()
+        self._download_reply = None
+        if error != QNetworkReply.NetworkError.NoError or not data:
+            self._update_fail(f"İndirme başarısız: {error_text}" if error
+                              else "İndirilen dosya boş.")
+            return
+        try:
+            with open(self._update_tmp, "wb") as fh:
+                fh.write(data)
+        except OSError as exc:
+            self._update_fail(f"İndirilen dosya yazılamadı: {exc}")
+            return
+        if not self._update_checksums_url:
+            self._update_fail("SHA256SUMS-linux bulunamadı; güvenlik için "
+                              "kurulum durduruldu.")
+            return
+        self.upd_detail.setText("SHA-256 doğrulanıyor…")
+        self.upd_progress.setRange(0, 0)
+        reply = self._net.get(self._net_request(self._update_checksums_url))
+        self._checksum_reply = reply
+        reply.finished.connect(lambda r=reply: self._update_checksum_done(r))
+
+    def _update_checksum_done(self, reply):
+        error = reply.error()
+        error_text = reply.errorString()
+        text = bytes(reply.readAll()).decode("utf-8", "replace")
+        reply.deleteLater()
+        self._checksum_reply = None
+        if error != QNetworkReply.NetworkError.NoError:
+            self._update_fail(f"SHA256 dosyası indirilemedi: {error_text}")
+            return
+        asset_name = str((self._update_asset or {}).get("name") or "")
+        expected = ""
+        for line in text.splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 2 and parts[-1].lstrip("*") == asset_name:
+                expected = parts[0].lower()
+                break
+        if not expected:
+            self._update_fail(f"SHA256 kaydı bulunamadı: {asset_name}")
+            return
+        try:
+            digest = hashlib.sha256()
+            with open(self._update_tmp, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            actual = digest.hexdigest()
+        except OSError as exc:
+            self._update_fail(f"Dosya doğrulanamadı: {exc}")
+            return
+        if actual != expected:
+            self._update_fail("SHA-256 uyuşmuyor; indirilen dosya kurulmadı.")
+            return
+        self.log("Güncelleme SHA-256 doğrulaması başarılı.")
+        self.upd_detail.setText("Doğrulama başarılı; kurulum başlatılıyor…")
+        self._update_install_file(self._update_tmp, self._update_asset)
+
+    def _update_install_file(self, path, asset):
+        name = str(asset.get("name") or "")
+        kind = update_asset_kind(name)
+        if kind == "portable":
+            self._update_install_portable(path)
+            return
+        if kind == "deb":
+            cmd = ["apt-get", "install", "-y", path]
+        elif kind == "rpm":
+            if shutil.which("dnf"):
+                cmd = ["dnf", "install", "-y", path]
+            elif shutil.which("zypper"):
+                cmd = ["zypper", "--non-interactive", "install",
+                       "--allow-unsigned-rpm", path]
+            else:
+                self._update_fail("dnf/zypper bulunamadı.")
+                return
+        elif kind == "arch":
+            cmd = ["pacman", "-U", "--noconfirm", path]
+        else:
+            self._update_fail("Bu dosya türü otomatik kurulamıyor.")
+            return
+        self._run_update_proc(["pkexec"] + cmd)
+
+    def _update_install_portable(self, path):
+        try:
+            tmpdir = tempfile.mkdtemp(prefix="openmonster-portable-")
+            self._update_portable_dir = tmpdir
+            with tarfile.open(path, "r:gz") as archive:
+                root = os.path.realpath(tmpdir)
+                for member in archive.getmembers():
+                    target = os.path.realpath(os.path.join(tmpdir, member.name))
+                    if target != root and not target.startswith(root + os.sep):
+                        raise ValueError(f"güvensiz arşiv yolu: {member.name}")
+                archive.extractall(tmpdir)
+            matches = glob.glob(os.path.join(tmpdir, "*", "install.sh"))
+            if not matches:
+                matches = glob.glob(os.path.join(tmpdir, "install.sh"))
+            if not matches:
+                raise FileNotFoundError("install.sh bulunamadı")
+            script = matches[0]
+            self._run_update_proc(["pkexec", "/bin/bash", script],
+                                  cwd=os.path.dirname(script))
+        except (OSError, tarfile.TarError, ValueError) as exc:
+            self._update_fail(f"Portable arşiv hazırlanamadı: {exc}")
+
+    def _run_update_proc(self, args, cwd=None):
+        self.upd_status.setText("Kurulum başlatılıyor…")
+        self.upd_detail.setText("Yönetici parolası istenebilir. Çıktı günlüğe "
+                                "yazılıyor…")
+        self.upd_detail.show()
+        self.upd_progress.setRange(0, 0)
+        proc = QProcess(self)
+        self._update_proc = proc
+        self._update_proc_log = []
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("DEBIAN_FRONTEND", "noninteractive")
+        env.insert("LC_ALL", "C")
+        proc.setProcessEnvironment(env)
+        if cwd:
+            proc.setWorkingDirectory(cwd)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(
+            lambda p=proc: self._update_proc_read(p))
+        proc.finished.connect(
+            lambda code, status, p=proc: self._update_proc_done(p, code, status))
+        proc.errorOccurred.connect(
+            lambda error, p=proc: self._update_proc_error(p, error))
+        proc.start(args[0], args[1:])
+
+    def _update_proc_read(self, proc):
+        raw = bytes(proc.readAllStandardOutput()).decode("utf-8", "replace")
+        for line in raw.splitlines():
+            line = line.strip()
+            if line:
+                self._update_proc_log.append(line)
+                self.log(line)
+
+    def _update_proc_error(self, proc, error):
+        if self._update_proc is not proc:
+            return
+        if error == QProcess.ProcessError.FailedToStart:
+            self._update_proc = None
+            self._update_fail("Kurulum süreci başlatılamadı.")
+
+    def _update_proc_done(self, proc, exit_code, exit_status):
+        if self._update_proc is not proc:
+            return
+        self._update_proc_read(proc)
+        self._update_proc = None
+        if exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit:
+            self._update_busy = False
+            self.upd_check_btn.setEnabled(True)
+            self.upd_progress.setRange(0, 100)
+            self.upd_progress.setValue(100)
+            self.upd_status.setText("Güncelleme kuruldu.")
+            self.upd_detail.setText("Yeni sürümü kullanmak için OpenMonster'ı "
+                                    "yeniden başlatın.")
+            self.upd_detail.show()
+            self.upd_install_btn.hide()
+            self.upd_restart_btn.show()
+            self._mark_update(False, "")
+            self.toast("Güncelleme kuruldu; yeniden başlatın")
+            self.log("Güncelleme başarıyla kuruldu.")
+            self._update_cleanup_tmp()
+        else:
+            self._update_fail(
+                f"Kurulum tamamlanmadı (çıkış kodu {exit_code}). "
+                "Parola iptal edilmiş olabilir.")
+
+    def _update_fail(self, message):
+        self._update_busy = False
+        self.upd_check_btn.setEnabled(True)
+        self.upd_install_btn.setEnabled(bool(self._update_available
+                                             and self._update_asset))
+        self.upd_install_btn.show()
+        self.upd_restart_btn.hide()
+        self.upd_progress.hide()
+        self.upd_status.setText("Güncelleme kurulamadı.")
+        self.upd_detail.setText(message)
+        self.upd_detail.show()
+        self.log(f"Güncelleme hatası: {message}")
+        self.toast(message, ok=False)
+        self._update_cleanup_tmp()
+
+    def _update_cleanup_tmp(self):
+        if self._update_tmp:
+            try:
+                os.unlink(self._update_tmp)
+            except OSError:
+                pass
+            self._update_tmp = None
+        if self._update_portable_dir:
+            shutil.rmtree(self._update_portable_dir, ignore_errors=True)
+            self._update_portable_dir = None
+
+    def _restart_app(self):
+        exe = shutil.which("openmonster")
+        if exe:
+            QProcess.startDetached(exe, [])
+        else:
+            QProcess.startDetached(
+                sys.executable,
+                [os.path.join(APP_DIR, "gui", "monstergui.py")])
+        self.quit_app()
+
     # ---------- Cikti ----------
     def _page_log(self):
         page = QWidget()
@@ -2356,13 +3842,19 @@ class Main(QMainWindow):
         self.profile_lbl.setText("Profil: manuel fan")
         btn = self.fan_group.checkedButton()
         sel = btn.property("val") if btn else "both"
-        self._cmd(["fan", self.fan_slider.value(), "--fan", sel], "Fan")
+        fan = self.fan_slider.value()
+        self._cmd(["fan", fan, "--fan", sel], "Fan")
+        if sel == "both":
+            self._save_last_settings({"name": "Manuel fan", "fan_mode": "manual",
+                                      "fan": fan}, manual=True)
 
     def fan_ec_auto(self):
         self._stop_curve()
         self._active_profile = None
         self.profile_lbl.setText("Profil: EC otomatik")
         self.run_root(["fan", "auto"], "Fan otomatik")
+        self._save_last_settings({"name": "EC otomatik", "fan_mode": "auto",
+                                  "fan": 0}, manual=True)
 
     def _stop_curve(self):
         self._active_curve = None
@@ -2390,9 +3882,10 @@ class Main(QMainWindow):
         self._curve_last_pct = target
         self.helper.send(["fan", target, "--fan", "both"])
 
-    def apply_profile(self, profile):
+    def apply_profile(self, profile, manual=True):
         name = profile.get("name", "Profil")
         mode = profile.get("fan_mode", "manual")
+        fan = _safe_int(profile.get("fan", 55), 0, 100)
         self._active_profile = name
         self.profile_lbl.setText(f"Profil: {name}" + (" · eğri" if mode == "curve" else ""))
         combo = getattr(self, "profile_combo", None)
@@ -2408,29 +3901,33 @@ class Main(QMainWindow):
             self._curve_last_pct = None
             self._curve_timer.start(3000)
             self._curve_tick()
+        elif mode == "auto":
+            self._stop_curve()
+            self.run_root(["fan", "auto"], f"Profil · {name} (EC otomatik)")
         else:
             self._stop_curve()
-            fan = int(profile.get("fan", 55))
             self.fan_slider.setValue(fan)
             both = self.fan_group.button(2)
             if both:
                 both.setChecked(True)
             self.run_root(["fan", fan, "--fan", "both"], f"Profil · fan %{fan}")
 
-        power = int(profile.get("power", 0))
-        if power > 0 and self._max_pl_w:
-            watts = max(5, int(round(self._max_pl_w * power / 100.0)))
+        power = _safe_int(profile.get("power", 0), 0, 100)
+        max1 = rapl_max_w("long_term") or self._max_pl_w
+        watts = max(5, int(round(max1 * power / 100.0))) if power > 0 and max1 else 0
+        if watts:
             self.pl1_spin.setValue(watts)
             self.pl2_spin.setValue(watts)
             self.run_root(["power", watts, watts], f"Profil · güç {watts} W")
 
-        pl4 = int(profile.get("pl4", 0))
-        if pl4 > 0 and self._max_pl4_w:
-            watts4 = max(5, int(round(self._max_pl4_w * pl4 / 100.0)))
+        pl4 = _safe_int(profile.get("pl4", 0), 0, 100)
+        max4 = rapl_max_w("peak_power") or self._max_pl4_w
+        watts4 = max(5, int(round(max4 * pl4 / 100.0))) if pl4 > 0 and max4 else 0
+        if watts4:
             self.pl4_spin.setValue(watts4)
             self.run_root(["power", "pl4", watts4], f"Profil · PL4 {watts4} W")
 
-        brightness = int(profile.get("brightness", 0))
+        brightness = _safe_int(profile.get("brightness", 0), 0, 100)
         if brightness > 0:
             if hasattr(self, "display_slider"):
                 self.display_slider.setValue(brightness)
@@ -2438,38 +3935,66 @@ class Main(QMainWindow):
                           f"Profil · parlaklık %{brightness}")
 
         gov = profile.get("governor", "")
-        if gov:
+        if gov in ("performance", "powersave"):
             if hasattr(self, "cpu_gov"):
                 idx = self.cpu_gov.findData(gov)
                 if idx >= 0:
                     self.cpu_gov.setCurrentIndex(idx)
             self.run_root(["cpu", "governor", gov], f"Profil · governor {gov}")
+        else:
+            gov = ""
+
         epp = profile.get("epp", "")
-        if epp:
+        if epp in ("default", "performance", "balance_performance",
+                   "balance_power", "power"):
             if hasattr(self, "cpu_epp"):
                 idx = self.cpu_epp.findData(epp)
                 if idx >= 0:
                     self.cpu_epp.setCurrentIndex(idx)
             self.run_root(["cpu", "epp", epp], f"Profil · EPP {epp}")
-        max_freq = int(profile.get("max_freq", 0))
+        else:
+            epp = ""
+
+        max_freq = _safe_int(profile.get("max_freq", 0), 0, 100)
         if 20 <= max_freq <= 100:
             if hasattr(self, "cpu_maxfreq"):
                 self.cpu_maxfreq.setValue(max_freq)
             self.run_root(["cpu", "max", max_freq], f"Profil · max %{max_freq}")
-        cores = int(profile.get("cores", 0))
+        else:
+            max_freq = 0
+
+        cores = _safe_int(profile.get("cores", 0), 0, 1024)
         if cores >= 1:
             if hasattr(self, "cpu_cores"):
                 self.cpu_cores.setValue(min(cores, cpu_total_count()))
             self.run_root(["cpu", "cores", cores], f"Profil · {cores} çekirdek")
+        else:
+            cores = 0
 
+        self._save_last_settings({
+            "name": name,
+            "fan_mode": mode if mode in ("manual", "curve", "auto") else "manual",
+            "fan": fan,
+            "curve": normalize_curve(profile.get("curve")),
+            "pl1_w": watts,
+            "pl2_w": watts,
+            "pl4_w": watts4,
+            "brightness": brightness,
+            "governor": gov,
+            "epp": epp,
+            "max_freq": max_freq,
+            "cores": cores,
+        }, manual=manual)
         self.toast(f"Profil: {name}", ok=True)
 
     def _toggle_auto_profiles(self, checked):
         self.settings["auto_profiles"] = bool(checked)
+        self.settings["manual_mode"] = False
         save_settings(self.settings)
         self._last_source = None
         if checked:
             self._auto_profile_check()
+        self.sync_autoprofile()
         self._rebuild_tray_menu()
 
     def _auto_profile_check(self):
@@ -2487,23 +4012,30 @@ class Main(QMainWindow):
         for prof in self.profiles:
             if source in (prof.get("bind") or []):
                 self.log(f"Otomatik profil: {prof['name']} ({source.upper()})")
-                self.apply_profile(prof)
+                self.apply_profile(prof, manual=False)
                 break
 
     def apply_power_limits(self):
-        self._cmd(["power", self.pl1_spin.value(), self.pl2_spin.value()],
-                  "Güç limitleri")
-        self._cmd(["power", "pl4", self.pl4_spin.value()], "PL4")
+        pl1 = self.pl1_spin.value()
+        pl2 = self.pl2_spin.value()
+        pl4 = self.pl4_spin.value()
+        self._cmd(["power", pl1, pl2], "Güç limitleri")
+        self._cmd(["power", "pl4", pl4], "PL4")
+        self._save_last_settings({"name": "Manuel güç", "pl1_w": pl1,
+                                  "pl2_w": pl2, "pl4_w": pl4}, manual=True)
 
     def apply_cpu_controls(self):
-        self.run_root(["cpu", "governor", self.cpu_gov.currentData()],
-                      "CPU governor")
-        self.run_root(["cpu", "epp", self.cpu_epp.currentData()],
-                      "CPU EPP")
-        self.run_root(["cpu", "max", self.cpu_maxfreq.value()],
-                      "CPU maksimum frekans")
-        self.run_root(["cpu", "cores", self.cpu_cores.value()],
-                      "CPU çekirdek sayısı")
+        gov = self.cpu_gov.currentData()
+        epp = self.cpu_epp.currentData()
+        max_freq = self.cpu_maxfreq.value()
+        cores = self.cpu_cores.value()
+        self.run_root(["cpu", "governor", gov], "CPU governor")
+        self.run_root(["cpu", "epp", epp], "CPU EPP")
+        self.run_root(["cpu", "max", max_freq], "CPU maksimum frekans")
+        self.run_root(["cpu", "cores", cores], "CPU çekirdek sayısı")
+        self._save_last_settings({"name": "Manuel CPU", "governor": gov,
+                                  "epp": epp, "max_freq": max_freq,
+                                  "cores": cores}, manual=True)
 
     def _battery_preset(self, pct):
         self.bat_spin.setValue(pct)
@@ -2518,6 +4050,7 @@ class Main(QMainWindow):
             self.toast("Profil dosyası yazılamadı", ok=False)
         # Yeni/degisen AC-pil atamasi bir sonraki kontrolde uygulanabilsin.
         self._last_source = None
+        self.sync_autoprofile()
         if hasattr(self, "tray_menu"):
             self._rebuild_tray_menu()
 
@@ -2703,6 +4236,8 @@ class Main(QMainWindow):
             self.pill.setObjectName("pillOk")
             self.connect_btn.setDisabled(True)
             self._flush_waiting()
+            # Root baglantisi kurulunca acilis ayarlarini sistemde guncelle.
+            QTimer.singleShot(400, self.sync_autoprofile)
             pending = getattr(self, "_pending_anim", None)
             if pending:
                 self._pending_anim = None
@@ -2716,11 +4251,24 @@ class Main(QMainWindow):
             self._waiting.clear()
         self.pill.style().unpolish(self.pill)
         self.pill.style().polish(self.pill)
+        if hasattr(self, "clean_root_state"):
+            if active is None:
+                self.clean_root_state.setText("Bağlanıyor…")
+                color = C_WARN
+            elif active:
+                self.clean_root_state.setText("Root aktif")
+                color = C_OK
+            else:
+                self.clean_root_state.setText("Root pasif")
+                color = C_MUTED
+            self.clean_root_state.setStyleSheet(
+                f"font-size:22px; font-weight:700; color:{color};")
 
     def closeEvent(self, ev):
         if (not self._quitting and getattr(self, "tray", None)
                 and self.tray.isVisible()):
             ev.ignore()
+            self._webcam_stop_preview()
             self.hide()
             if not self._tray_note_shown:
                 self._tray_note_shown = True
@@ -2729,6 +4277,7 @@ class Main(QMainWindow):
                     "simgeye sağ tıklayın.", QSystemTrayIcon.MessageIcon.Information, 3500)
             return
         self._stop_anim()
+        self._webcam_stop_preview()
         super().closeEvent(ev)
 
     # ---------- canli veri ----------
