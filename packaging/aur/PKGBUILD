@@ -20,7 +20,7 @@ backup=(
 )
 install=openmonster.install
 source=("$pkgname-$pkgver.tar.gz::https://github.com/talhayksk/openmonster/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('375dba62c0cbee08d2f524d48b0dc19384c2fcf4e35c18fcbffa0adc66570429')
+sha256sums=('998f98d10ae458bbe5f0f4be2d5ef17c6b67285355255a3d128b3a18c11ffb45')
 
 build() {
   cd "$pkgname-$pkgver"
