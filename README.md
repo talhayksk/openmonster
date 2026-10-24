@@ -22,20 +22,33 @@ yazılmış açık kaynak bir kontrol merkezidir. Gerçek donanım (EC/BIOS) üz
 ## Özellikler
 
 - **Canlı izleme:** CPU/GPU sıcaklığı, frekans ve güç; NVIDIA GPU yükü/belleği;
-  fan devri ve duty; RAM; disk sağlığı/sıcaklığı/okuma-yazma; batarya; PL1/PL2.
+  fan devri ve duty; RAM; disk sağlığı/sıcaklığı/okuma-yazma; batarya; PL1/PL2/PL4.
 - **Fan kontrolü:** EC universal fan tablosu (`0x0F00..0x0F5F`) + doğrudan
   `0x1804` / `0x1809` yazımı. CPU/GPU fanını ayrı ayrı veya birlikte sürme.
-- **Fan profilleri:** Sessiz / Dengeli / Performans hazır gelir. Kontroller
-  ekranından **＋ Yeni** ile kendi profilinizi (ad + fan % + güç %) ekleyin.
-  Profillere sağ tıklayıp düzenleyin/silin. Profiller
-  `~/.config/openmonster/profiles.json` içinde saklanır.
+- **Fan profilleri (Profil 2.0):** Sessiz / Dengeli / Performans hazır gelir.
+  Kontroller ekranından **＋ Yeni** ile ad, sabit fan hızı veya sıcaklık
+  eğrisi, güç limiti, ekran parlaklığı, CPU governor/EPP, maksimum frekans ve
+  çekirdek sayısı içeren profiller oluşturun. Profillere sağ tıklayıp
+  düzenleyin/silin. Profiller `~/.config/openmonster/profiles.json` içinde
+  saklanır.
+- **Fan eğrisi editörü:** Sürüklenebilir noktalarla sıcaklık→fan eğrisi.
+  Eğri, en sıcak CPU/GPU sensörüne göre 3 saniyede bir uygulanır; 70 °C
+  üstünde güvenlik için en az %40 fan zorunludur.
+- **AC/pil otomasyonu:** Profillere “AC” ve/veya “pil” atayın; güç kaynağı
+  değiştiğinde uygun profil otomatik uygulanır. Açılışta da geçerli kaynağın
+  profili seçilir (uygulama tepside çalışırken).
 - **Sistem tepsisi:** Pencereyi kapatmak uygulamayı kapatmaz; arka planda
   çalışır. Tepsi menüsünden uygulamayı açmadan RAM/sistem temizleyebilir,
   klavye rengi ve animasyonu seçebilir, fan profili uygulayabilirsiniz.
 - **Klavye RGB:** Renk seçici + 6 animasyon (gökkuşağı, nefes, kalp atışı,
   ateş, renk geçişi, çakar).
-- **Batarya:** Şarj limiti (%10–100 veya kapalı).
-- **CPU güç limitleri:** intel-rapl üzerinden PL1/PL2.
+- **Batarya:** Şarj limiti (%10–100 veya kapalı) ve hazır profiller:
+  Tam / Dengeli %90 / Sabit %80.
+- **CPU güç limitleri:** intel-rapl üzerinden PL1/PL2/PL4.
+- **CPU performans:** governor (performance/powersave), EPP, maksimum frekans
+  yüzdesi ve çevrimiçi çekirdek sayısı; CLI ve profillerden yönetilebilir.
+- **Ekran:** Parlaklık kontrolü ve profil bazında parlaklık. (Yenileme hızı
+  Wayland'da taşınabilir değil; GPU geçişi MUX olmadığı için kapsam dışı.)
 - **Sistem temizleyici:** paket önbelleği, journal, sistem önbellekleri, çöp
   kutusu, küçük resimler ve uygulama önbelleği.
 - **Tam ekran:** F11 ile tam ekran, Esc ile çıkış. Göstergeler her çözünürlükte
@@ -145,6 +158,9 @@ sudo systemctl enable --now monster-ctrl-fanprofile.service
 ## Arka plan ve sistem tepsisi
 
 - Pencereyi kapattığınızda uygulama tepsiye küçülür ve çalışmaya devam eder.
+  Fan eğrisi ve AC/pil otomatik profilleri, root bağlantısı kurulduktan sonra
+  bu süreç açıkken çalışır. Tepsi menüsündeki **Root bağlantısını kur / yenile**
+  ile parola bir kez sorulur.
 - Tepsi simgesine **sol tık** pencereyi açar, **sağ tık** hızlı menüyü gösterir.
 - Menüden: RAM temizle, sistem temizle, klavye rengi/animasyonu, fan profilleri,
   otomatik EC modu, otomatik başlatma ve çıkış.
@@ -161,13 +177,21 @@ sudo monsterctl fan diag              # EC teşhis (mod/flag/register)
 sudo monsterctl fan auto              # orijinal tabloya dön
 sudo monsterctl fan factory           # universal kapat & tabloyu sıfırla
 sudo monsterctl fanprofile [--interval 3] [--curve 40:30,50:40,60:55,70:70,80:85,90:100]
+                                      # 70 °C üstünde en az %40 güvenlik tabanı
 sudo monsterctl monitor <sn>
 sudo monsterctl battery <10-100|off|status>
 sudo monsterctl kbd <0-100|on|off|status>
 sudo monsterctl kbd color <R> <G> <B>
 sudo monsterctl power status
 sudo monsterctl power stat            # anlık CPU paket gücü (W)
-sudo monsterctl power pl1 <W> | pl2 <W> | <pl1> <pl2>
+sudo monsterctl power pl1 <W> | pl2 <W> | pl4 <W> | <pl1> <pl2>
+sudo monsterctl display status
+sudo monsterctl display brightness <1-100>
+sudo monsterctl cpu status            # governor / EPP / frekans / çekirdek
+sudo monsterctl cpu governor <performance|powersave>
+sudo monsterctl cpu epp <default|performance|balance_performance|balance_power|power>
+sudo monsterctl cpu max <20-100>      # cpuinfo_max_freq yüzdesi
+sudo monsterctl cpu cores <1-N>
 sudo monsterctl cleanup ram           # RAM önbelleğini boşalt
 sudo monsterctl cleanup journal [MB]  # journal loglarını küçült
 sudo monsterctl cleanup pkgcache      # paket önbelleğini temizle
@@ -188,7 +212,11 @@ monsterctl helper                     # GUI root yardımcısı (doğrudan kullan
 - **Klavye RGB:** `uniwill:multicolor:kbd_backlight` sysfs; kanallar
   `multi_max_intensity` aralığına otomatik ölçeklenir. Animasyonlar GUI
   zamanlayıcısıyla sürülür.
-- **PL1/PL2:** `/sys/class/powercap/intel-rapl:0`.
+- **PL1/PL2/PL4:** `/sys/class/powercap/intel-rapl:0`.
+- **CPU performans:** `cpufreq/policy*` altında `scaling_governor`,
+  `energy_performance_preference`, `scaling_max_freq`; çekirdekler
+  `cpu*/online`. Tüm politikalara uygulanır.
+- **Ekran parlaklığı:** `/sys/class/backlight/*/brightness`.
 - **Fiziksel profil tuşu:** Uniwill WMI `KEY_F6` → Sessiz/Dengeli/Performans
   döngüsü (root yardımcısı dinler).
 
@@ -226,7 +254,8 @@ otomatik derleyip release'e ekler. Manuel çalıştırma için GitHub Actions
 - [x] M2.5: Fiziksel profil tuşu, zengin izleme
 - [x] M3: RGB efektleri + serbest renk seçici
 - [x] M5: Sistem tepsisi, arka plan, özel fan profilleri, paketleme
-- [ ] M6: TUI panel ve değişken WIN kısayolları
+- [x] M6: Profil 2.0 (fan eğrisi editörü, AC/pil otomasyonu, CPU/ekran denetimi)
+- [ ] M7: Kalıcı profil daemon'u, TUI panel ve değişken WIN kısayolları
 
 ## Lisans
 

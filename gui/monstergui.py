@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGridLayout, QStackedWidget, QSlider,
     QSpinBox, QPlainTextEdit, QButtonGroup, QSizePolicy, QColorDialog,
     QScrollArea, QComboBox, QCheckBox, QSystemTrayIcon, QMenu, QDialog,
-    QLineEdit, QFormLayout, QDialogButtonBox, QMessageBox,
+    QLineEdit, QFormLayout, QDialogButtonBox, QMessageBox, QTabWidget,
 )
 
 APP_NAME = "OpenMonster"
@@ -41,9 +41,16 @@ AUTOSTART_FILE = os.path.join(
 HWMON_DIR = "/sys/class/hwmon"
 BAT = "/sys/class/power_supply/BAT0"
 RAPL = "/sys/class/powercap/intel-rapl:0"
+BACKLIGHT_DIR = "/sys/class/backlight"
+CPUFREQ_DIR = "/sys/devices/system/cpu/cpufreq"
+CPU_SYS_DIR = "/sys/devices/system/cpu"
 PROJECT_BIN = os.path.join(APP_DIR, "monsterctl")
 INSTALLED_BIN = "/usr/local/bin/monsterctl"
 PACKAGED_BIN = "/usr/bin/monsterctl"
+
+DEFAULT_CURVE = [[40, 30], [50, 40], [60, 55], [70, 70], [80, 85], [90, 100]]
+FAN_SAFETY_TEMP = 70
+FAN_SAFETY_MIN_PCT = 40
 
 
 def _project_or_system(*parts):
@@ -101,6 +108,112 @@ def uniwill_hwmon():
     except OSError:
         pass
     return None
+
+
+def coretemp_max():
+    """uniwill hwmon yoksa CPU paket sicakligi icin yedek kaynak."""
+    try:
+        for d in sorted(os.listdir(HWMON_DIR)):
+            base = os.path.join(HWMON_DIR, d)
+            if rread(os.path.join(base, "name")) != "coretemp":
+                continue
+            vals = []
+            for p in glob.glob(os.path.join(base, "temp*_input")):
+                v = rread(p)
+                try:
+                    vals.append(float(v) / 1000)
+                except (TypeError, ValueError):
+                    pass
+            if vals:
+                return max(vals)
+    except OSError:
+        pass
+    return None
+
+
+def backlight_device():
+    try:
+        for d in sorted(os.listdir(BACKLIGHT_DIR)):
+            p = os.path.join(BACKLIGHT_DIR, d)
+            if os.path.exists(os.path.join(p, "brightness")):
+                return p
+    except OSError:
+        pass
+    return None
+
+
+def backlight_pct():
+    d = backlight_device()
+    if not d:
+        return None
+    cur, maxb = rread(os.path.join(d, "brightness")), rread(os.path.join(d, "max_brightness"))
+    try:
+        return int(cur) * 100 // int(maxb)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def ac_online():
+    for p in ("/sys/class/power_supply/AC0/online",
+              "/sys/class/power_supply/AC/online",
+              "/sys/class/power_supply/ADP1/online"):
+        v = rread(p)
+        if v is not None:
+            return v == "1"
+    return None
+
+
+def cpu_total_count():
+    n = os.cpu_count() or 1
+    return n
+
+
+def cpu_online_count():
+    n = 0
+    for i in range(cpu_total_count()):
+        v = rread(os.path.join(CPU_SYS_DIR, f"cpu{i}", "online"))
+        if v is None or v == "1":
+            n += 1
+    return n
+
+
+def cpu_current(attr):
+    v = rread(os.path.join(CPUFREQ_DIR, "policy0", attr))
+    return v if v else ""
+
+
+def normalize_curve(raw):
+    out = []
+    for item in raw or []:
+        try:
+            t, p = int(item[0]), int(item[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if 20 <= t <= 100:
+            out.append([t, max(0, min(100, p))])
+    out.sort(key=lambda x: x[0])
+    clean = []
+    for t, p in out:
+        if clean and t <= clean[-1][0]:
+            t = clean[-1][0] + 1
+        if t > 100:
+            break
+        clean.append([t, p])
+    if len(clean) < 2:
+        return [list(x) for x in DEFAULT_CURVE]
+    return clean[:8]
+
+
+def curve_pct(curve, temp):
+    pts = curve or DEFAULT_CURVE
+    if temp <= pts[0][0]:
+        return pts[0][1]
+    for i in range(1, len(pts)):
+        if temp <= pts[i][0]:
+            t0, d0 = pts[i - 1]
+            t1, d1 = pts[i]
+            return d0 + (d1 - d0) * (temp - t0) / max(1, t1 - t0)
+    return pts[-1][1]
 
 
 def temp_color(c):
@@ -308,9 +421,18 @@ def gpu_name_short(name):
 
 # ---------- kalici ayarlar ----------
 DEFAULT_PROFILES = [
-    {"name": "Sessiz", "fan": 35, "power": 30, "builtin": True},
-    {"name": "Dengeli", "fan": 55, "power": 60, "builtin": True},
-    {"name": "Performans", "fan": 85, "power": 100, "builtin": True},
+    {"name": "Sessiz", "fan_mode": "manual", "fan": 35,
+     "curve": [list(x) for x in DEFAULT_CURVE], "power": 30, "pl4": 0,
+     "brightness": 60, "governor": "powersave", "epp": "power",
+     "max_freq": 60, "cores": 0, "bind": ["bat"], "builtin": True},
+    {"name": "Dengeli", "fan_mode": "manual", "fan": 55,
+     "curve": [list(x) for x in DEFAULT_CURVE], "power": 60, "pl4": 0,
+     "brightness": 100, "governor": "powersave", "epp": "balance_performance",
+     "max_freq": 100, "cores": 0, "bind": ["ac"], "builtin": True},
+    {"name": "Performans", "fan_mode": "manual", "fan": 85,
+     "curve": [list(x) for x in DEFAULT_CURVE], "power": 100, "pl4": 0,
+     "brightness": 100, "governor": "performance", "epp": "performance",
+     "max_freq": 100, "cores": 0, "bind": [], "builtin": True},
 ]
 
 
@@ -343,18 +465,54 @@ def load_profiles():
         try:
             name = str(p.get("name", "")).strip()
             fan = max(0, min(100, int(p.get("fan", 50))))
-            power = max(5, min(100, int(p.get("power", 60))))
+            power = max(0, min(100, int(p.get("power", 60))))
         except (TypeError, ValueError):
             continue
-        if name:
-            out.append({"name": name, "fan": fan, "power": power,
-                        "builtin": bool(p.get("builtin", False))})
+        if not name:
+            continue
+        legacy = "fan_mode" not in p
+        base = None
+        if legacy and p.get("builtin"):
+            base = next((d for d in DEFAULT_PROFILES
+                         if d.get("name") == name and d.get("builtin")), None)
+        base = base or {}
+        bind = [x for x in ((p["bind"] if "bind" in p else base.get("bind")) or [])
+                if x in ("ac", "bat")]
+        fan_mode = p.get("fan_mode") if p.get("fan_mode") in ("manual", "curve") else "manual"
+        try:
+            pl4 = max(0, min(100, int(p.get("pl4", base.get("pl4", 0)))))
+            brightness = max(0, min(100, int(p.get(
+                "brightness", base.get("brightness", 0)))))
+            max_freq = max(0, min(100, int(p.get(
+                "max_freq", base.get("max_freq", 0)))))
+            cores = max(0, int(p.get("cores", base.get("cores", 0))))
+        except (TypeError, ValueError):
+            pl4 = brightness = max_freq = cores = 0
+        governor = p.get("governor", base.get("governor", ""))
+        if governor not in ("performance", "powersave"):
+            governor = ""
+        epp = p.get("epp", base.get("epp", ""))
+        if epp not in ("default", "performance", "balance_performance",
+                       "balance_power", "power"):
+            epp = ""
+        out.append({
+            "name": name, "fan_mode": fan_mode, "fan": fan,
+            "curve": normalize_curve(p.get("curve")), "power": power,
+            "pl4": pl4, "brightness": brightness,
+            "governor": governor, "epp": epp,
+            "max_freq": max_freq, "cores": cores, "bind": bind,
+            "builtin": bool(p.get("builtin", False)),
+        })
     return out or [dict(p) for p in DEFAULT_PROFILES]
 
 
 def load_settings():
     data = load_json(SETTINGS_FILE, {})
     return data if isinstance(data, dict) else {}
+
+
+def save_settings(data):
+    return save_json(SETTINGS_FILE, data)
 
 
 def autostart_enabled():
@@ -391,50 +549,272 @@ X-GNOME-Autostart-enabled=true
         return False
 
 
+class CurveEditor(QWidget):
+    """Sürüklenebilir sıcaklık→fan eğrisi. 20-100 °C aralığında çalışır."""
+
+    def __init__(self, points=None, parent=None):
+        super().__init__(parent)
+        self._pts = normalize_curve(points)
+        self._drag = -1
+        self.setMinimumHeight(190)
+        self.setMouseTracking(True)
+        self.setToolTip("Noktaları sürükleyerek eğriyi değiştirin. "
+                        "70 °C üstünde en az %40 fan güvenlik tabanı uygulanır.")
+
+    def points(self):
+        return [list(p) for p in self._pts]
+
+    def _plot(self):
+        return QRectF(38, 14, max(40.0, self.width() - 52.0),
+                      max(60.0, self.height() - 42.0))
+
+    def _to_px(self, t, p):
+        r = self._plot()
+        x = r.left() + (t - 20) / 80.0 * r.width()
+        y = r.bottom() - p / 100.0 * r.height()
+        return x, y
+
+    def _from_px(self, x, y, idx):
+        r = self._plot()
+        t = 20 + (x - r.left()) / max(1.0, r.width()) * 80.0
+        p = (r.bottom() - y) / max(1.0, r.height()) * 100.0
+        lo = self._pts[idx - 1][0] + 1 if idx > 0 else 20
+        hi = self._pts[idx + 1][0] - 1 if idx + 1 < len(self._pts) else 100
+        return [max(lo, min(hi, int(round(t)))), max(0, min(100, int(round(p))))]
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if not self.isEnabled():
+            p.setOpacity(0.42)
+        r = self._plot()
+        p.fillRect(self.rect(), QColor(C_CARD))
+        p.setPen(QPen(QColor(C_BORDER), 1))
+        for v in (20, 40, 60, 80, 100):
+            x, _ = self._to_px(v, 0)
+            p.drawLine(int(x), int(r.top()), int(x), int(r.bottom()))
+        for v in (0, 25, 50, 75, 100):
+            _, y = self._to_px(20, v)
+            p.drawLine(int(r.left()), int(y), int(r.right()), int(y))
+        p.setPen(QColor(C_MUTED))
+        f = p.font()
+        f.setPointSizeF(8.0)
+        p.setFont(f)
+        for v in (20, 40, 60, 80, 100):
+            x, _ = self._to_px(v, 0)
+            p.drawText(QRectF(x - 14, r.bottom() + 4, 28, 16),
+                       int(Qt.AlignmentFlag.AlignCenter), str(v))
+        for v in (0, 50, 100):
+            _, y = self._to_px(20, v)
+            p.drawText(QRectF(2, y - 7, 32, 14),
+                       int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                       str(v))
+
+        p.setPen(QPen(QColor(C_ACCENT), 2.4))
+        for i in range(1, len(self._pts)):
+            x0, y0 = self._to_px(*self._pts[i - 1])
+            x1, y1 = self._to_px(*self._pts[i])
+            p.drawLine(int(x0), int(y0), int(x1), int(y1))
+        for i, (t, v) in enumerate(self._pts):
+            x, y = self._to_px(t, v)
+            col = QColor(C_OK) if i != self._drag else QColor(C_WARN)
+            p.setBrush(col)
+            p.setPen(QPen(QColor(C_BG), 2))
+            p.drawEllipse(QRectF(x - 5, y - 5, 10, 10))
+
+    def _hit(self, pos):
+        best, dist = -1, 18.0
+        for i, (t, v) in enumerate(self._pts):
+            x, y = self._to_px(t, v)
+            d = math.hypot(pos.x() - x, pos.y() - y)
+            if d < dist:
+                best, dist = i, d
+        return best
+
+    def mousePressEvent(self, ev):
+        self._drag = self._hit(ev.position())
+        if self._drag >= 0:
+            self.update()
+
+    def mouseMoveEvent(self, ev):
+        if self._drag < 0:
+            return
+        self._pts[self._drag] = self._from_px(
+            ev.position().x(), ev.position().y(), self._drag)
+        self.update()
+
+    def mouseReleaseEvent(self, _ev):
+        self._drag = -1
+        self.update()
+
+
 class ProfileDialog(QDialog):
-    """Yeni fan profili: ad + fan yuzdesi + guc yuzdesi."""
+    """Profil 2.0: fan eğrisi, güç, ekran ve AC/pil otomasyonu."""
 
     def __init__(self, parent=None, profile=None):
         super().__init__(parent)
-        self.setWindowTitle("Fan profili")
+        prof = profile or {}
+        self.setWindowTitle("Profil")
         self.setModal(True)
-        self.setMinimumWidth(340)
-        self.name = QLineEdit((profile or {}).get("name", ""))
+        self.setMinimumSize(540, 640)
+
+        outer = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs, 1)
+
+        # --- genel ---
+        general = QWidget()
+        gf = QFormLayout(general)
+        gf.setContentsMargins(16, 16, 16, 16)
+        self.name = QLineEdit(prof.get("name", ""))
         self.name.setPlaceholderText("örn. Gece modu")
+        gf.addRow("Profil adı", self.name)
+
+        bindbox = QWidget()
+        bl = QHBoxLayout(bindbox)
+        bl.setContentsMargins(0, 0, 0, 0)
+        self.bind_ac = QCheckBox("AC takılıyken")
+        self.bind_bat = QCheckBox("Pilde")
+        self.bind_ac.setChecked("ac" in (prof.get("bind") or []))
+        self.bind_bat.setChecked("bat" in (prof.get("bind") or []))
+        bl.addWidget(self.bind_ac)
+        bl.addWidget(self.bind_bat)
+        bl.addStretch()
+        gf.addRow("Otomatik uygula", bindbox)
+
+        self.power = QSpinBox()
+        self.power.setRange(0, 100)
+        self.power.setSuffix(" %")
+        self.power.setSpecialValueText("Değiştirme")
+        self.power.setValue(int(prof.get("power", 60)))
+        gf.addRow("Güç limiti", self.power)
+
+        self.pl4 = QSpinBox()
+        self.pl4.setRange(0, 100)
+        self.pl4.setSuffix(" %")
+        self.pl4.setSpecialValueText("Değiştirme")
+        self.pl4.setValue(int(prof.get("pl4", 0)))
+        gf.addRow("PL4 (tepe) limiti", self.pl4)
+
+        self.brightness = QSpinBox()
+        self.brightness.setRange(0, 100)
+        self.brightness.setSuffix(" %")
+        self.brightness.setSpecialValueText("Değiştirme")
+        self.brightness.setValue(int(prof.get("brightness", 0)))
+        gf.addRow("Ekran parlaklığı", self.brightness)
+
+        self.governor = QComboBox()
+        for label, val in (("Değiştirme", ""), ("performance", "performance"),
+                           ("powersave", "powersave")):
+            self.governor.addItem(label, val)
+        self.governor.setCurrentIndex(max(0, self.governor.findData(prof.get("governor", ""))))
+        gf.addRow("CPU governor", self.governor)
+
+        self.epp = QComboBox()
+        for label, val in (("Değiştirme", ""), ("default", "default"),
+                           ("performance", "performance"),
+                           ("balance_performance", "balance_performance"),
+                           ("balance_power", "balance_power"), ("power", "power")):
+            self.epp.addItem(label, val)
+        self.epp.setCurrentIndex(max(0, self.epp.findData(prof.get("epp", ""))))
+        gf.addRow("EPP", self.epp)
+
+        self.max_freq = QSpinBox()
+        self.max_freq.setRange(0, 100)
+        self.max_freq.setSuffix(" %")
+        self.max_freq.setSpecialValueText("Değiştirme")
+        self.max_freq.setValue(int(prof.get("max_freq", 0)))
+        gf.addRow("Maks. frekans", self.max_freq)
+
+        self.cores = QSpinBox()
+        self.cores.setRange(0, cpu_total_count())
+        self.cores.setSpecialValueText("Değiştirme")
+        self.cores.setValue(int(prof.get("cores", 0)))
+        gf.addRow("Çekirdek sayısı", self.cores)
+
+        note = QLabel("AC/pil için işaretlenen profiller, güç kaynağı değiştiğinde "
+                      "otomatik uygulanır. Aynı kaynak için ilk eşleşen profil kazanır.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        gf.addRow(note)
+        self.tabs.addTab(general, "Genel")
+
+        # --- fan ---
+        fanpage = QWidget()
+        ff = QVBoxLayout(fanpage)
+        ff.setContentsMargins(16, 16, 16, 16)
+        form = QFormLayout()
+        self.fan_mode = QComboBox()
+        self.fan_mode.addItem("Manuel sabit hız", "manual")
+        self.fan_mode.addItem("Sıcaklık eğrisi", "curve")
+        self.fan_mode.setCurrentIndex(max(0, self.fan_mode.findData(
+            prof.get("fan_mode", "manual"))))
+        form.addRow("Fan modu", self.fan_mode)
         self.fan = QSpinBox()
         self.fan.setRange(0, 100)
         self.fan.setSuffix(" %")
-        self.fan.setValue(int((profile or {}).get("fan", 50)))
-        self.power = QSpinBox()
-        self.power.setRange(5, 100)
-        self.power.setSuffix(" %")
-        self.power.setValue(int((profile or {}).get("power", 60)))
-        form = QFormLayout(self)
-        form.addRow("Profil adı", self.name)
-        form.addRow("Fan hızı", self.fan)
-        form.addRow("Güç limiti", self.power)
-        note = QLabel("Güç limiti, CPU'nun en yüksek PL değerinin yüzdesidir.")
-        note.setObjectName("muted")
-        note.setWordWrap(True)
-        form.addRow(note)
+        self.fan.setValue(int(prof.get("fan", 55)))
+        form.addRow("Sabit fan hızı", self.fan)
+        ff.addLayout(form)
+        self.curve = CurveEditor(prof.get("curve") or DEFAULT_CURVE)
+        ff.addWidget(self.curve, 1)
+        ff.addWidget(self._hint("Eğri, en sıcak CPU/GPU sensörüne göre uygulanır. "
+                                "70 °C üstünde %40 altına inilmez."))
+        self.fan_mode.currentIndexChanged.connect(self._sync_fan_mode)
+        self.tabs.addTab(fanpage, "Fan eğrisi")
+        self._sync_fan_mode()
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        outer.addWidget(buttons)
         self.name.setFocus()
+
+    def _hint(self, text):
+        l = QLabel(text)
+        l.setObjectName("muted")
+        l.setWordWrap(True)
+        return l
+
+    def _sync_fan_mode(self):
+        curve = self.fan_mode.currentData() == "curve"
+        self.fan.setEnabled(not curve)
+        self.curve.setEnabled(curve)
 
     def _accept(self):
         if not self.name.text().strip():
-            QMessageBox.warning(self, "Fan profili", "Profil adı boş olamaz.")
+            QMessageBox.warning(self, "Profil", "Profil adı boş olamaz.")
             return
+        if self.fan_mode.currentData() == "curve":
+            pts = self.curve.points()
+            if len(pts) < 2:
+                QMessageBox.warning(self, "Profil", "Fan eğrisi en az 2 nokta içermeli.")
+                return
         self.accept()
 
     def values(self):
-        return {"name": self.name.text().strip(),
-                "fan": self.fan.value(), "power": self.power.value(),
-                "builtin": False}
+        bind = []
+        if self.bind_ac.isChecked():
+            bind.append("ac")
+        if self.bind_bat.isChecked():
+            bind.append("bat")
+        return {
+            "name": self.name.text().strip(),
+            "fan_mode": self.fan_mode.currentData() or "manual",
+            "fan": self.fan.value(),
+            "curve": self.curve.points(),
+            "power": self.power.value(),
+            "pl4": self.pl4.value(),
+            "brightness": self.brightness.value(),
+            "governor": self.governor.currentData() or "",
+            "epp": self.epp.currentData() or "",
+            "max_freq": self.max_freq.value(),
+            "cores": self.cores.value(),
+            "bind": bind,
+            "builtin": False,
+        }
 
 
 QSS = f"""
@@ -677,6 +1057,45 @@ QMenu::item {{
 }}
 QMenu::item:selected {{ background: #1d2b45; }}
 QMenu::separator {{ height: 1px; background: {C_BORDER}; margin: 5px 8px; }}
+QTabWidget::pane {{
+    border: 1px solid {C_BORDER};
+    border-radius: 10px;
+    background: {C_CARD};
+    margin-top: 6px;
+}}
+QTabBar::tab {{
+    background: #0f1520;
+    color: {C_MUTED};
+    border: 1px solid {C_BORDER};
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    padding: 7px 16px;
+    margin-right: 4px;
+    font-weight: 600;
+}}
+QTabBar::tab:selected {{
+    background: #1b2c49;
+    color: #9cc2ff;
+    border-color: #2f4f7f;
+}}
+QTabBar::tab:hover {{ color: {C_TEXT}; }}
+QDialogButtonBox QPushButton {{
+    background: #0f1520;
+    color: {C_TEXT};
+    border: 1px solid {C_BORDER};
+    border-radius: 8px;
+    padding: 7px 18px;
+    min-width: 84px;
+    font-weight: 600;
+}}
+QDialogButtonBox QPushButton:hover {{ background: #171f2d; border-color: #2b3950; }}
+QDialogButtonBox QPushButton:default {{
+    background: {C_ACCENT};
+    color: #ffffff;
+    border: none;
+}}
+QDialogButtonBox QPushButton:default:hover {{ background: #6a9dff; }}
 """
 
 
@@ -915,6 +1334,7 @@ class Main(QMainWindow):
         self._quitting = False
         self._tray_note_shown = False
         self._max_pl_w = None
+        self._max_pl4_w = None
         self._cpu_title = None
         self._gpu_title = None
         self._pkg_w = None
@@ -926,6 +1346,12 @@ class Main(QMainWindow):
         self._anim_breath = 0.0
         self._anim_mode = "rainbow"
         self._anim_t0 = 0.0
+        self._active_curve = None
+        self._curve_last_pct = None
+        self._last_cpu_temp = None
+        self._last_gpu_temp = None
+        self._last_source = None
+        self._active_profile = None
 
         root = QWidget()
         root.setObjectName("rootRoot")
@@ -988,6 +1414,13 @@ class Main(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(2000)
+        self._curve_timer = QTimer(self)
+        self._curve_timer.setInterval(3000)
+        self._curve_timer.timeout.connect(self._curve_tick)
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setInterval(5000)
+        self._auto_timer.timeout.connect(self._auto_profile_check)
+        self._auto_timer.start(5000)
         self.refresh()
         if self.start_hidden and getattr(self, "tray", None) and self.tray.isVisible():
             self.tray.showMessage(APP_NAME, "Arka planda çalışıyor. Menü için simgeye sağ tıklayın.",
@@ -1068,6 +1501,7 @@ class Main(QMainWindow):
         m = self.tray_menu
         m.clear()
         m.addAction("Kontrol merkezini aç", self.show_window)
+        m.addAction("Root bağlantısını kur / yenile", self.helper.start_job)
         m.addSeparator()
         m.addAction("RAM temizle", self.tray_clean_ram)
         m.addAction("Sistem temizle", self.tray_clean_system)
@@ -1094,11 +1528,13 @@ class Main(QMainWindow):
 
         fm = m.addMenu("Fan profili")
         for prof in self.profiles:
-            act = fm.addAction(f"{prof['name']} · fan %{prof['fan']}")
+            suffix = ("eğri" if prof.get("fan_mode") == "curve"
+                      else f"fan %{prof.get('fan', 0)}")
+            act = fm.addAction(f"{prof['name']} · {suffix}")
             act.triggered.connect(lambda _=False, p=dict(prof):
                                   self.apply_profile(p))
         fm.addSeparator()
-        fm.addAction("Otomatik (EC)", lambda: self.run_root(["fan", "auto"], "Fan otomatik"))
+        fm.addAction("Otomatik (EC)", self.fan_ec_auto)
 
         m.addSeparator()
         auto = m.addAction("Açılışta arka planda başlat")
@@ -1125,6 +1561,8 @@ class Main(QMainWindow):
             "Monster/Uniwill laptoplar için Linux kontrol merkezi.<br><br>"
             "Fan, klavye RGB, batarya limiti, CPU güç limitleri ve sistem "
             "temizliği tek yerden.<br><br>"
+            "Profil 2.0: fan eğrisi, AC/pil otomasyonu, CPU governor/EPP, "
+            "maksimum frekans, çekirdek sayısı ve ekran parlaklığı.<br><br>"
             f"<a href='https://github.com/talhayksk/openmonster'>"
             "github.com/talhayksk/openmonster</a>")
 
@@ -1244,7 +1682,7 @@ class Main(QMainWindow):
         self.page_title.setText(["Izleme", "Kontroller", "Sistem", "Çıktı"][idx])
         self.page_sub.setText([
             "Canlı durum — 2 saniyede bir yenilenir",
-            "Fan, klavye ışığı, batarya ve güç limitleri",
+            "Fan, klavye ışığı, batarya, güç ve ekran denetimleri",
             "Disk sağlığı ve seçmeli sistem temizliği",
             "Root işlemlerinin günlüğü",
         ][idx])
@@ -1327,7 +1765,8 @@ class Main(QMainWindow):
         h.setSpacing(22)
         self.pl1_val = QLabel("PL1 –")
         self.pl2_val = QLabel("PL2 –")
-        for w in (self.pl1_val, self.pl2_val):
+        self.pl4_val = QLabel("PL4 –")
+        for w in (self.pl1_val, self.pl2_val, self.pl4_val):
             w.setStyleSheet("font-size: 20px; font-weight: 700;")
             h.addWidget(w)
         h.addStretch()
@@ -1380,7 +1819,7 @@ class Main(QMainWindow):
         b2 = QPushButton("Otomatik (EC)")
         b2.setObjectName("ghost")
         b2.setCursor(Qt.CursorShape.PointingHandCursor)
-        b2.clicked.connect(lambda: self._cmd(["fan", "auto"], "Fan otomatik"))
+        b2.clicked.connect(self.fan_ec_auto)
         h.addWidget(b2)
         h.addWidget(b1)
         fl.addLayout(h)
@@ -1415,8 +1854,16 @@ class Main(QMainWindow):
         morep.clicked.connect(self._profile_menu)
         prof.addWidget(morep)
         fl.addLayout(prof)
+        self.auto_profile_cb = QCheckBox("AC/pil değişiminde otomatik profil")
+        self.auto_profile_cb.setToolTip("Güç kaynağı değiştiğinde profil listesindeki "
+                                        "AC/pil atamalarını uygular (uygulama açıkken)")
+        self.auto_profile_cb.setChecked(bool(self.settings.get("auto_profiles", True)))
+        self.auto_profile_cb.toggled.connect(self._toggle_auto_profiles)
+        fl.addWidget(self.auto_profile_cb)
         hint = self._hint("Fiziksel profil tuşu profiller arasında dolaşır. "
-                          "Profil listesine sağ tıklayarak düzenleyebilirsiniz.")
+                          "Profil listesine sağ tıklayarak düzenleyebilirsiniz. "
+                          "Eğri profilleri 70 °C üstünde en az %40 fan uygular. "
+                          "Açılışta otomatik çalışması için “Açılışta arka planda”yı açın.")
         fl.addWidget(hint)
         self.fan_slider.valueChanged.connect(lambda v: self.fan_val.setText(f"%{v}"))
         grid.addWidget(fan, 0, 0)
@@ -1512,6 +1959,16 @@ class Main(QMainWindow):
         hb.addWidget(self.bat_spin)
         hb.addStretch()
         bl.addLayout(hb)
+        presets = QHBoxLayout()
+        presets.setSpacing(8)
+        for label, pct in (("Tam", 100), ("Dengeli %90", 90), ("Sabit %80", 80)):
+            pb = QPushButton(label)
+            pb.setObjectName("ghost")
+            pb.setCursor(Qt.CursorShape.PointingHandCursor)
+            pb.clicked.connect(lambda _=False, v=pct: self._battery_preset(v))
+            presets.addWidget(pb)
+        presets.addStretch()
+        bl.addLayout(presets)
         hb2 = QHBoxLayout()
         hb2.setSpacing(8)
         hb2.addStretch()
@@ -1545,8 +2002,14 @@ class Main(QMainWindow):
         self.pl2_spin.setValue(115)
         self.pl2_spin.setPrefix("PL2  ")
         self.pl2_spin.setSuffix(" W")
+        self.pl4_spin = QSpinBox()
+        self.pl4_spin.setRange(5, 255)
+        self.pl4_spin.setValue(215)
+        self.pl4_spin.setPrefix("PL4  ")
+        self.pl4_spin.setSuffix(" W")
         hp.addWidget(self.pl1_spin)
         hp.addWidget(self.pl2_spin)
+        hp.addWidget(self.pl4_spin)
         hp.addStretch()
         pl.addLayout(hp)
         hp2 = QHBoxLayout()
@@ -1554,18 +2017,96 @@ class Main(QMainWindow):
         ab = QPushButton("Uygula")
         ab.setObjectName("primary")
         ab.setCursor(Qt.CursorShape.PointingHandCursor)
-        ab.clicked.connect(lambda: self._cmd(
-            ["power", self.pl1_spin.value(), self.pl2_spin.value()], "Güç limitleri"))
+        ab.clicked.connect(self.apply_power_limits)
         hp2.addWidget(ab)
         pl.addLayout(hp2)
-        pl.addWidget(self._hint("PL1 sürekli, PL2 kısa süreli (boost) tavanıdır."))
+        pl.addWidget(self._hint("PL1 sürekli, PL2 kısa süreli boost, PL4 tepe güç tavanıdır."))
         grid.addWidget(pw, 1, 1)
+
+        # CPU performans
+        cpu = Card()
+        cl = QVBoxLayout(cpu)
+        cl.setContentsMargins(18, 16, 18, 16)
+        cl.addWidget(make_title("CPU PERFORMANS"))
+        cf = QFormLayout()
+        cf.setContentsMargins(0, 0, 0, 0)
+        self.cpu_gov = QComboBox()
+        self.cpu_gov.addItem("powersave", "powersave")
+        self.cpu_gov.addItem("performance", "performance")
+        idx = self.cpu_gov.findData(cpu_current("scaling_governor"))
+        self.cpu_gov.setCurrentIndex(max(0, idx))
+        cf.addRow("Governor", self.cpu_gov)
+
+        self.cpu_epp = QComboBox()
+        for val in ("default", "performance", "balance_performance",
+                    "balance_power", "power"):
+            self.cpu_epp.addItem(val, val)
+        idx = self.cpu_epp.findData(cpu_current("energy_performance_preference"))
+        self.cpu_epp.setCurrentIndex(max(0, idx))
+        cf.addRow("EPP", self.cpu_epp)
+
+        self.cpu_maxfreq = QSpinBox()
+        self.cpu_maxfreq.setRange(20, 100)
+        self.cpu_maxfreq.setSuffix(" %")
+        mf = rread(os.path.join(CPUFREQ_DIR, "policy0", "scaling_max_freq"))
+        bf = rread(os.path.join(CPUFREQ_DIR, "policy0", "cpuinfo_max_freq"))
+        try:
+            self.cpu_maxfreq.setValue(max(20, min(100, int(mf) * 100 // int(bf))))
+        except (TypeError, ValueError, ZeroDivisionError):
+            self.cpu_maxfreq.setValue(100)
+        cf.addRow("Maks. frekans", self.cpu_maxfreq)
+
+        self.cpu_cores = QSpinBox()
+        self.cpu_cores.setRange(1, cpu_total_count())
+        self.cpu_cores.setValue(max(1, cpu_online_count()))
+        cf.addRow("Çekirdek", self.cpu_cores)
+        cl.addLayout(cf)
+        crow = QHBoxLayout()
+        crow.addStretch()
+        cb = QPushButton("Uygula")
+        cb.setObjectName("primary")
+        cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        cb.clicked.connect(self.apply_cpu_controls)
+        crow.addWidget(cb)
+        cl.addLayout(crow)
+        cl.addWidget(self._hint("Frekans üst sınırı ve çekirdek sayısı anında uygulanır; "
+                                "yeniden başlatmada sıfırlanabilir."))
+        grid.addWidget(cpu, 2, 0)
+
+        # Ekran
+        scr = Card()
+        sl = QVBoxLayout(scr)
+        sl.setContentsMargins(18, 16, 18, 16)
+        sl.addWidget(make_title("EKRAN"))
+        self.display_slider = QSlider(Qt.Orientation.Horizontal)
+        self.display_slider.setRange(5, 100)
+        cur_bl = backlight_pct()
+        self.display_slider.setValue(max(5, cur_bl if cur_bl is not None else 100))
+        self.display_val = QLabel(f"%{self.display_slider.value()}")
+        self.display_val.setStyleSheet("font-size: 18px; font-weight: 700;")
+        self.display_slider.valueChanged.connect(
+            lambda v: self.display_val.setText(f"%{v}"))
+        sl.addWidget(self.display_slider)
+        srow = QHBoxLayout()
+        srow.addWidget(self.display_val)
+        srow.addStretch()
+        sb = QPushButton("Uygula")
+        sb.setObjectName("primary")
+        sb.setCursor(Qt.CursorShape.PointingHandCursor)
+        sb.clicked.connect(lambda: self._cmd(
+            ["display", "brightness", self.display_slider.value()], "Ekran parlaklığı"))
+        srow.addWidget(sb)
+        sl.addLayout(srow)
+        sl.addWidget(self._hint("Parlaklık profillere de kaydedilebilir; "
+                                "AC ve pil için ayrı değer kullanabilirsiniz."))
+        grid.addWidget(scr, 2, 1)
 
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         grid.setRowStretch(0, 0)
         grid.setRowStretch(1, 0)
-        grid.setRowStretch(2, 1)
+        grid.setRowStretch(2, 0)
+        grid.setRowStretch(3, 1)
         return self._wrap_scroll(page)
 
     def _wrap_scroll(self, content):
@@ -1810,16 +2351,50 @@ class Main(QMainWindow):
                 break
 
     def fan_apply(self):
+        self._stop_curve()
+        self._active_profile = None
+        self.profile_lbl.setText("Profil: manuel fan")
         btn = self.fan_group.checkedButton()
         sel = btn.property("val") if btn else "both"
         self._cmd(["fan", self.fan_slider.value(), "--fan", sel], "Fan")
 
+    def fan_ec_auto(self):
+        self._stop_curve()
+        self._active_profile = None
+        self.profile_lbl.setText("Profil: EC otomatik")
+        self.run_root(["fan", "auto"], "Fan otomatik")
+
+    def _stop_curve(self):
+        self._active_curve = None
+        self._curve_last_pct = None
+        timer = getattr(self, "_curve_timer", None)
+        if timer is not None:
+            timer.stop()
+
+    def _curve_tick(self):
+        if not self._active_curve or not self.helper.active:
+            return
+        temps = [t for t in (self._last_cpu_temp, self._last_gpu_temp)
+                 if t is not None]
+        if not temps:
+            return
+        hottest = max(temps)
+        target = int(round(curve_pct(self._active_curve, hottest)))
+        if hottest >= FAN_SAFETY_TEMP:
+            target = max(target, FAN_SAFETY_MIN_PCT)
+        target = max(0, min(100, target))
+        if target == self._curve_last_pct:
+            return
+        if self.helper.current or self.helper.pending:
+            return
+        self._curve_last_pct = target
+        self.helper.send(["fan", target, "--fan", "both"])
+
     def apply_profile(self, profile):
         name = profile.get("name", "Profil")
-        fan = int(profile.get("fan", 55))
-        power = int(profile.get("power", 60))
-        self.profile_lbl.setText(f"Profil: {name}")
-        self.fan_slider.setValue(fan)
+        mode = profile.get("fan_mode", "manual")
+        self._active_profile = name
+        self.profile_lbl.setText(f"Profil: {name}" + (" · eğri" if mode == "curve" else ""))
         combo = getattr(self, "profile_combo", None)
         if combo is not None:
             idx = combo.findData(name)
@@ -1827,21 +2402,122 @@ class Main(QMainWindow):
                 combo.blockSignals(True)
                 combo.setCurrentIndex(idx)
                 combo.blockSignals(False)
-        both = self.fan_group.button(2)
-        if both:
-            both.setChecked(True)
-        self.run_root(["fan", fan, "--fan", "both"], f"Profil · fan %{fan}")
-        if self._max_pl_w:
+
+        if mode == "curve":
+            self._active_curve = normalize_curve(profile.get("curve"))
+            self._curve_last_pct = None
+            self._curve_timer.start(3000)
+            self._curve_tick()
+        else:
+            self._stop_curve()
+            fan = int(profile.get("fan", 55))
+            self.fan_slider.setValue(fan)
+            both = self.fan_group.button(2)
+            if both:
+                both.setChecked(True)
+            self.run_root(["fan", fan, "--fan", "both"], f"Profil · fan %{fan}")
+
+        power = int(profile.get("power", 0))
+        if power > 0 and self._max_pl_w:
             watts = max(5, int(round(self._max_pl_w * power / 100.0)))
             self.pl1_spin.setValue(watts)
             self.pl2_spin.setValue(watts)
             self.run_root(["power", watts, watts], f"Profil · güç {watts} W")
+
+        pl4 = int(profile.get("pl4", 0))
+        if pl4 > 0 and self._max_pl4_w:
+            watts4 = max(5, int(round(self._max_pl4_w * pl4 / 100.0)))
+            self.pl4_spin.setValue(watts4)
+            self.run_root(["power", "pl4", watts4], f"Profil · PL4 {watts4} W")
+
+        brightness = int(profile.get("brightness", 0))
+        if brightness > 0:
+            if hasattr(self, "display_slider"):
+                self.display_slider.setValue(brightness)
+            self.run_root(["display", "brightness", brightness],
+                          f"Profil · parlaklık %{brightness}")
+
+        gov = profile.get("governor", "")
+        if gov:
+            if hasattr(self, "cpu_gov"):
+                idx = self.cpu_gov.findData(gov)
+                if idx >= 0:
+                    self.cpu_gov.setCurrentIndex(idx)
+            self.run_root(["cpu", "governor", gov], f"Profil · governor {gov}")
+        epp = profile.get("epp", "")
+        if epp:
+            if hasattr(self, "cpu_epp"):
+                idx = self.cpu_epp.findData(epp)
+                if idx >= 0:
+                    self.cpu_epp.setCurrentIndex(idx)
+            self.run_root(["cpu", "epp", epp], f"Profil · EPP {epp}")
+        max_freq = int(profile.get("max_freq", 0))
+        if 20 <= max_freq <= 100:
+            if hasattr(self, "cpu_maxfreq"):
+                self.cpu_maxfreq.setValue(max_freq)
+            self.run_root(["cpu", "max", max_freq], f"Profil · max %{max_freq}")
+        cores = int(profile.get("cores", 0))
+        if cores >= 1:
+            if hasattr(self, "cpu_cores"):
+                self.cpu_cores.setValue(min(cores, cpu_total_count()))
+            self.run_root(["cpu", "cores", cores], f"Profil · {cores} çekirdek")
+
         self.toast(f"Profil: {name}", ok=True)
+
+    def _toggle_auto_profiles(self, checked):
+        self.settings["auto_profiles"] = bool(checked)
+        save_settings(self.settings)
+        self._last_source = None
+        if checked:
+            self._auto_profile_check()
+        self._rebuild_tray_menu()
+
+    def _auto_profile_check(self):
+        if not getattr(self, "auto_profile_cb", None) or not self.auto_profile_cb.isChecked():
+            return
+        if not self.helper.active or not self.profiles:
+            return
+        online = ac_online()
+        if online is None:
+            return
+        source = "ac" if online else "bat"
+        if source == self._last_source:
+            return
+        self._last_source = source
+        for prof in self.profiles:
+            if source in (prof.get("bind") or []):
+                self.log(f"Otomatik profil: {prof['name']} ({source.upper()})")
+                self.apply_profile(prof)
+                break
+
+    def apply_power_limits(self):
+        self._cmd(["power", self.pl1_spin.value(), self.pl2_spin.value()],
+                  "Güç limitleri")
+        self._cmd(["power", "pl4", self.pl4_spin.value()], "PL4")
+
+    def apply_cpu_controls(self):
+        self.run_root(["cpu", "governor", self.cpu_gov.currentData()],
+                      "CPU governor")
+        self.run_root(["cpu", "epp", self.cpu_epp.currentData()],
+                      "CPU EPP")
+        self.run_root(["cpu", "max", self.cpu_maxfreq.value()],
+                      "CPU maksimum frekans")
+        self.run_root(["cpu", "cores", self.cpu_cores.value()],
+                      "CPU çekirdek sayısı")
+
+    def _battery_preset(self, pct):
+        self.bat_spin.setValue(pct)
+        if pct >= 100:
+            self._cmd(["battery", "off"], "Batarya limiti kapalı")
+        else:
+            self._cmd(["battery", pct], f"Batarya limiti %{pct}")
 
     # ---- ozel fan profilleri ----
     def _save_profiles(self):
         if not save_json(PROFILES_FILE, self.profiles):
             self.toast("Profil dosyası yazılamadı", ok=False)
+        # Yeni/degisen AC-pil atamasi bir sonraki kontrolde uygulanabilsin.
+        self._last_source = None
         if hasattr(self, "tray_menu"):
             self._rebuild_tray_menu()
 
@@ -2056,8 +2732,39 @@ class Main(QMainWindow):
         super().closeEvent(ev)
 
     # ---------- canli veri ----------
+    def _read_thermal(self):
+        """Sicaklik/fan okumasi; pencere gizliyken de fan egrisi icin calisir."""
+        hw = uniwill_hwmon()
+        if not hw:
+            c = coretemp_max()
+            if c is not None:
+                self._last_cpu_temp = c
+                self.g_cpu.set(c, f"{c:.0f}", temp_color(c))
+            return
+        t1 = rread(os.path.join(hw, "temp1_input"))
+        t2 = rread(os.path.join(hw, "temp2_input"))
+        f1 = rread(os.path.join(hw, "fan1_input"))
+        f2 = rread(os.path.join(hw, "fan2_input"))
+        d1 = int(rread(os.path.join(hw, "pwm1")) or 0)
+        d2 = int(rread(os.path.join(hw, "pwm2")) or 0)
+        if t1:
+            c = float(t1) / 1000
+            self._last_cpu_temp = c
+            self.g_cpu.set(c, f"{c:.0f}", temp_color(c))
+        if t2:
+            g = float(t2) / 1000
+            self._last_gpu_temp = g
+            self.g_gpu.set(g, f"{g:.0f}", temp_color(g))
+        if f1:
+            duty = d1 * 100 / 200
+            self.g_fan1.set(duty, f"{int(f1):,}", C_ACCENT, f"%{duty:.0f}")
+        if f2:
+            duty = d2 * 100 / 200
+            self.g_fan2.set(duty, f"{int(f2):,}", C_ACCENT, f"%{duty:.0f}")
+
     def refresh(self):
-        # Pencere tepsideyken agir okumalari (nvidia-smi vb.) durdur.
+        self._read_thermal()
+        # Pencere tepsideyken agir okumalari (nvidia-smi, disk vb.) durdur.
         if (getattr(self, "_stats_ready", False) and not self.isVisible()
                 and getattr(self, "tray", None) and self.tray.isVisible()):
             return
@@ -2070,27 +2777,9 @@ class Main(QMainWindow):
         cpu_sub = f"{freq:.1f} GHz" if freq else ""
         if self._pkg_w is not None:
             cpu_sub = (cpu_sub + " · " if cpu_sub else "") + f"{self._pkg_w:.0f} W"
-
-        hw = uniwill_hwmon()
-        if hw:
-            t1 = rread(os.path.join(hw, "temp1_input"))
-            t2 = rread(os.path.join(hw, "temp2_input"))
-            f1 = rread(os.path.join(hw, "fan1_input"))
-            f2 = rread(os.path.join(hw, "fan2_input"))
-            d1 = int(rread(os.path.join(hw, "pwm1")) or 0)
-            d2 = int(rread(os.path.join(hw, "pwm2")) or 0)
-            if t1:
-                c = float(t1) / 1000
-                self.g_cpu.set(c, f"{c:.0f}", temp_color(c), cpu_sub)
-            if t2:
-                g = float(t2) / 1000
-                self.g_gpu.set(g, f"{g:.0f}", temp_color(g), self.g_gpu.sub)
-            if f1:
-                duty = d1 * 100 / 200
-                self.g_fan1.set(duty, f"{int(f1):,}", C_ACCENT, f"%{duty:.0f}")
-            if f2:
-                duty = d2 * 100 / 200
-                self.g_fan2.set(duty, f"{int(f2):,}", C_ACCENT, f"%{duty:.0f}")
+        if self._last_cpu_temp is not None:
+            c = self._last_cpu_temp
+            self.g_cpu.set(c, f"{c:.0f}", temp_color(c), cpu_sub)
 
         nv = nvidia_stats()
         if self._cpu_title is None:
@@ -2111,6 +2800,10 @@ class Main(QMainWindow):
                 parts.append(f"{nv['power']:.0f} W")
             if parts:
                 self.g_gpu.set_sub(" · ".join(parts))
+            if nv.get("temp") is not None and uniwill_hwmon() is None:
+                g = float(nv["temp"])
+                self._last_gpu_temp = g
+                self.g_gpu.set(g, f"{g:.0f}", temp_color(g))
         if nv and nv["util"] is not None:
             util = nv["util"]
             mu = nv["mem_used"] or 0
@@ -2162,7 +2855,9 @@ class Main(QMainWindow):
             n = rread(f"{RAPL}/constraint_{i}_name")
             if n:
                 idxmap[n] = i
-        for kind, lbl, w in (("long_term", "PL1", self.pl1_val), ("short_term", "PL2", self.pl2_val)):
+        for kind, lbl, w in (("long_term", "PL1", self.pl1_val),
+                             ("short_term", "PL2", self.pl2_val),
+                             ("peak_power", "PL4", self.pl4_val)):
             if kind in idxmap:
                 uw = rread(f"{RAPL}/constraint_{idxmap[kind]}_power_limit_uw")
                 if uw:
@@ -2170,7 +2865,10 @@ class Main(QMainWindow):
                 maxuw = rread(f"{RAPL}/constraint_{idxmap[kind]}_max_power_limit_uw")
                 base = int(maxuw) / 1e6 if maxuw else (int(uw) / 1e6 if uw else None)
                 if base:
-                    self._max_pl_w = max(self._max_pl_w or 0, base)
+                    if kind == "peak_power":
+                        self._max_pl4_w = max(self._max_pl4_w or 0, base)
+                    else:
+                        self._max_pl_w = max(self._max_pl_w or 0, base)
         self._stats_ready = True
 
 

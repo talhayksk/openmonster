@@ -52,6 +52,12 @@
 #define BAT_PATH             "/sys/class/power_supply/BAT0"
 #define KBD_LED              "/sys/class/leds/uniwill:multicolor:kbd_backlight"
 #define RAPL_DIR             "/sys/class/powercap/intel-rapl:0"
+#define BACKLIGHT_DIR        "/sys/class/backlight"
+#define CPUFREQ_DIR          "/sys/devices/system/cpu/cpufreq"
+#define CPU_SYS_DIR          "/sys/devices/system/cpu"
+
+#define FAN_SAFETY_TEMP      70
+#define FAN_SAFETY_MIN_PCT   40
 
 // ---------- yardimcilar ----------
 static void trim(char *s)
@@ -596,6 +602,276 @@ static int cmd_kbd(int argc, char **argv)
 	return 0;
 }
 
+// ---------- ekran parlakligi ----------
+static int backlight_find(char *out, size_t len)
+{
+	DIR *d = opendir(BACKLIGHT_DIR);
+	if (!d) return -1;
+	struct dirent *e;
+	int found = -1;
+	while ((e = readdir(d)) != NULL) {
+		if (e->d_name[0] == '.') continue;
+		char p[256];
+		snprintf(p, sizeof(p), BACKLIGHT_DIR "/%.200s/max_brightness", e->d_name);
+		if (access(p, R_OK) == 0) {
+			snprintf(out, len, BACKLIGHT_DIR "/%.200s", e->d_name);
+			found = 0;
+			if (strstr(e->d_name, "intel_backlight")) break;
+		}
+	}
+	closedir(d);
+	return found;
+}
+
+static int backlight_get(const char *path, long *cur, long *max)
+{
+	char p[320], buf[64];
+	snprintf(p, sizeof(p), "%s/max_brightness", path);
+	if (read_sys(p, buf, sizeof(buf)) != 0) return -1;
+	*max = atol(buf);
+	snprintf(p, sizeof(p), "%s/brightness", path);
+	if (read_sys(p, buf, sizeof(buf)) != 0) return -1;
+	*cur = atol(buf);
+	return *max > 0 ? 0 : -1;
+}
+
+static int cmd_display(int argc, char **argv)
+{
+	char bl[256];
+	if (backlight_find(bl, sizeof(bl)) != 0) {
+		fprintf(stderr, "Ekran parlakligi aygiti bulunamadi (%s).\n", BACKLIGHT_DIR);
+		return 1;
+	}
+	long cur = 0, max = 0;
+	if (backlight_get(bl, &cur, &max) != 0) {
+		fprintf(stderr, "Parlaklik okunamadi: %s\n", bl);
+		return 1;
+	}
+	int pct_now = (int)(cur * 100 / max);
+
+	if (argc < 2 || strcmp(argv[1], "status") == 0) {
+		printf("Ekran parlakligi: %d%% (%ld/%ld) — %s\n", pct_now, cur, max, bl);
+		return 0;
+	}
+	if (strcmp(argv[1], "brightness") != 0 || argc < 3) {
+		fprintf(stderr, "kullanim: monsterctl display [status|brightness <1-100>]\n");
+		return 2;
+	}
+
+	int pct = atoi(argv[2]);
+	if (pct < 1 || pct > 100) {
+		fprintf(stderr, "Parlaklik 1-100 araliginda olmali.\n");
+		return 2;
+	}
+	long val = max * pct / 100;
+	if (val < 1) val = 1;
+	char p[320], v[32];
+	snprintf(p, sizeof(p), "%s/brightness", bl);
+	snprintf(v, sizeof(v), "%ld", val);
+	if (write_sys(p, v) != 0) {
+		fprintf(stderr, "Parlaklik yazilamadi (root gerekli?).\n");
+		return 1;
+	}
+	printf("Ekran parlakligi: %d%% -> %ld/%ld\n", pct, val, max);
+	return 0;
+}
+
+// ---------- CPU frekans / cekirdek kontrolu ----------
+static int policy_dirs(char dirs[][256], int max)
+{
+	DIR *d = opendir(CPUFREQ_DIR);
+	if (!d) return 0;
+	struct dirent *e;
+	int n = 0;
+	while ((e = readdir(d)) != NULL && n < max) {
+		if (strncmp(e->d_name, "policy", 6) != 0) continue;
+		snprintf(dirs[n], 256, CPUFREQ_DIR "/%.200s", e->d_name);
+		n++;
+	}
+	closedir(d);
+	// policy10, policy2 ... seklinde gelebilir; siralama onemsiz.
+	return n;
+}
+
+static int list_has_token(const char *list, const char *tok)
+{
+	size_t tl = strlen(tok);
+	const char *p = list;
+	while (*p) {
+		while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+		const char *s = p;
+		while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
+		if ((size_t)(p - s) == tl && strncmp(s, tok, tl) == 0) return 1;
+	}
+	return 0;
+}
+
+static int cpu_apply_choice(const char *attr, const char *avail_attr,
+			    const char *value, const char *label)
+{
+	char dirs[64][256];
+	int n = policy_dirs(dirs, 64);
+	if (n == 0) {
+		fprintf(stderr, "cpufreq politikalari bulunamadi.\n");
+		return 1;
+	}
+	int ok = 0, skipped = 0;
+	for (int i = 0; i < n; i++) {
+		char p[512], avail[256];
+		snprintf(p, sizeof(p), "%.255s/%.48s", dirs[i], avail_attr);
+		if (read_sys(p, avail, sizeof(avail)) == 0 && !list_has_token(avail, value)) {
+			skipped++;
+			continue;
+		}
+		snprintf(p, sizeof(p), "%.255s/%.48s", dirs[i], attr);
+		if (write_sys(p, value) == 0) ok++;
+		else skipped++;
+	}
+	if (ok == 0) {
+		fprintf(stderr, "%s yazilamadi (root? desteklenmiyor?).\n", label);
+		return 1;
+	}
+	printf("CPU %s: %s (%d politika%s)\n", label, value, ok,
+	       skipped ? ", bazi politikalarda desteklenmiyor" : "");
+	return 0;
+}
+
+static int cpu_set_max_pct(int pct)
+{
+	if (pct < 20 || pct > 100) {
+		fprintf(stderr, "Maksimum frekans yuzdesi 20-100 araliginda olmali.\n");
+		return 2;
+	}
+	char dirs[64][256];
+	int n = policy_dirs(dirs, 64);
+	if (n == 0) {
+		fprintf(stderr, "cpufreq politikalari bulunamadi.\n");
+		return 1;
+	}
+	int ok = 0;
+	long long last = 0;
+	for (int i = 0; i < n; i++) {
+		char p[512], buf[64];
+		long long maxf = 0, minf = 0;
+		snprintf(p, sizeof(p), "%.255s/cpuinfo_max_freq", dirs[i]);
+		if (read_sys(p, buf, sizeof(buf)) != 0) continue;
+		maxf = atoll(buf);
+		snprintf(p, sizeof(p), "%.255s/cpuinfo_min_freq", dirs[i]);
+		if (read_sys(p, buf, sizeof(buf)) == 0) minf = atoll(buf);
+		long long target = maxf * pct / 100;
+		if (minf > 0 && target < minf) target = minf;
+		snprintf(p, sizeof(p), "%.255s/scaling_max_freq", dirs[i]);
+		char v[32];
+		snprintf(v, sizeof(v), "%lld", target);
+		if (write_sys(p, v) == 0) { ok++; last = target; }
+	}
+	if (ok == 0) {
+		fprintf(stderr, "Maksimum frekans yazilamadi (root? intel_pstate kisiti?).\n");
+		return 1;
+	}
+	printf("CPU maksimum frekansi: %d%% -> %.2f GHz (%d politika)\n",
+	       pct, (double)last / 1e6, ok);
+	return 0;
+}
+
+static int cpu_total_count(void)
+{
+	long n = sysconf(_SC_NPROCESSORS_CONF);
+	return n > 0 ? (int)n : 1;
+}
+
+static int cpu_online_count(void)
+{
+	int total = cpu_total_count(), on = 0;
+	for (int i = 0; i < total; i++) {
+		char p[256], b[16];
+		snprintf(p, sizeof(p), CPU_SYS_DIR "/cpu%d/online", i);
+		if (read_sys(p, b, sizeof(b)) != 0) { on++; continue; } // cpu0 online dosyasi yok
+		if (atoi(b) == 1) on++;
+	}
+	return on;
+}
+
+static int cpu_set_cores(int n)
+{
+	int total = cpu_total_count();
+	if (n < 1 || n > total) {
+		fprintf(stderr, "Cekirdek sayisi 1-%d araliginda olmali.\n", total);
+		return 2;
+	}
+	int ok = 0;
+	for (int i = 1; i < total; i++) {
+		char p[256], v[8];
+		snprintf(p, sizeof(p), CPU_SYS_DIR "/cpu%d/online", i);
+		if (access(p, W_OK) != 0 && access(p, F_OK) != 0) continue;
+		snprintf(v, sizeof(v), "%d", i < n ? 1 : 0);
+		if (write_sys(p, v) == 0) ok++;
+	}
+	printf("CPU cekirdek sayisi: %d/%d (online: %d)\n", n, total, cpu_online_count());
+	return ok > 0 ? 0 : 1;
+}
+
+static int cmd_cpu(int argc, char **argv)
+{
+	if (argc < 2 || strcmp(argv[1], "status") == 0) {
+		char dirs[64][256], gov[64] = "-", epp[64] = "-", buf[64];
+		int n = policy_dirs(dirs, 64);
+		if (n > 0) {
+			char p[512];
+			snprintf(p, sizeof(p), "%.255s/scaling_governor", dirs[0]);
+			(void)read_sys(p, gov, sizeof(gov));
+			snprintf(p, sizeof(p), "%.255s/energy_performance_preference", dirs[0]);
+			(void)read_sys(p, epp, sizeof(epp));
+			long long maxf = 0, curf = 0;
+			snprintf(p, sizeof(p), "%.255s/cpuinfo_max_freq", dirs[0]);
+			if (read_sys(p, buf, sizeof(buf)) == 0) maxf = atoll(buf);
+			snprintf(p, sizeof(p), "%.255s/scaling_cur_freq", dirs[0]);
+			if (read_sys(p, buf, sizeof(buf)) == 0) curf = atoll(buf);
+			printf("CPU durumu:\n");
+			printf("  governor : %s\n", gov);
+			printf("  EPP      : %s\n", epp);
+			printf("  frekans  : %.2f / %.2f GHz\n",
+			       (double)curf / 1e6, (double)maxf / 1e6);
+			printf("  cekirdek : %d/%d online\n", cpu_online_count(), cpu_total_count());
+			printf("  politika : %d\n", n);
+			return 0;
+		}
+		fprintf(stderr, "cpufreq bilgisi bulunamadi.\n");
+		return 1;
+	}
+
+	if (strcmp(argv[1], "governor") == 0) {
+		if (argc < 3) { fprintf(stderr, "kullanim: monsterctl cpu governor <performance|powersave>\n"); return 2; }
+		return cpu_apply_choice("scaling_governor", "scaling_available_governors",
+					argv[2], "governor");
+	}
+	if (strcmp(argv[1], "epp") == 0) {
+		if (argc < 3) {
+			fprintf(stderr, "kullanim: monsterctl cpu epp <default|performance|balance_performance|balance_power|power>\n");
+			return 2;
+		}
+		return cpu_apply_choice("energy_performance_preference",
+					"energy_performance_available_preferences",
+					argv[2], "EPP");
+	}
+	if (strcmp(argv[1], "max") == 0) {
+		if (argc < 3) { fprintf(stderr, "kullanim: monsterctl cpu max <20-100>\n"); return 2; }
+		return cpu_set_max_pct(atoi(argv[2]));
+	}
+	if (strcmp(argv[1], "cores") == 0) {
+		if (argc < 3) { fprintf(stderr, "kullanim: monsterctl cpu cores <1-%d>\n", cpu_total_count()); return 2; }
+		return cpu_set_cores(atoi(argv[2]));
+	}
+
+	fprintf(stderr,
+		"kullanim: monsterctl cpu status\n"
+		"          monsterctl cpu governor <performance|powersave>\n"
+		"          monsterctl cpu epp <default|performance|balance_performance|balance_power|power>\n"
+		"          monsterctl cpu max <20-100>\n"
+		"          monsterctl cpu cores <1-%d>\n", cpu_total_count());
+	return 2;
+}
+
 // ---------- CPU guc limitleri (PL1/PL2) ----------
 // Birincil arayuz intel-rapl (powercap); EC 0x0783/0x0784 yalnizca bilgi amacli okunur.
 static int rapl_find_constraint(const char *kind)
@@ -698,17 +974,19 @@ static int cmd_power(int argc, char **argv)
 			"          monsterctl power stat        (anlik paket gucu, W)\n"
 			"          monsterctl power pl1 <W>        (surekli limit)\n"
 			"          monsterctl power pl2 <W>        (kisa sureli/boost limit)\n"
+			"          monsterctl power pl4 <W>        (peak power)\n"
 			"          monsterctl power <pl1> <pl2>    (ikisi birden)\n");
 		return 2;
 	}
 
 	if (strcmp(argv[1], "status") == 0) {
-		struct { const char *kind, *label; } cons[2] = {
+		struct { const char *kind, *label; } cons[3] = {
 			{ "long_term", "PL1 (long_term)" },
 			{ "short_term", "PL2 (short_term)" },
+			{ "peak_power", "PL4 (peak_power)" },
 		};
 		printf("CPU guc limitleri (intel-rapl, package-0):\n");
-		for (int i = 0; i < 2; i++) {
+		for (int i = 0; i < 3; i++) {
 			int idx = rapl_find_constraint(cons[i].kind);
 			if (idx < 0) { printf("  %s: bulunamadi\n", cons[i].label); continue; }
 			long long uw = rapl_read_uw(idx);
@@ -736,6 +1014,10 @@ static int cmd_power(int argc, char **argv)
 	if (strcmp(argv[1], "pl2") == 0) {
 		if (argc < 3) { fprintf(stderr, "kullanim: monsterctl power pl2 <W>\n"); return 2; }
 		return rapl_set_w("short_term", atoi(argv[2]));
+	}
+	if (strcmp(argv[1], "pl4") == 0) {
+		if (argc < 3) { fprintf(stderr, "kullanim: monsterctl power pl4 <W>\n"); return 2; }
+		return rapl_set_w("peak_power", atoi(argv[2]));
 	}
 
 	// power <pl1> <pl2>
@@ -884,6 +1166,10 @@ static int cmd_fanprofile(int argc, char **argv)
 		}
 		float hottest = (cpu > gpu) ? cpu : gpu;
 		int target = curve_pct(curve, clen, (int)hottest);
+
+		// TCC ile ayni guvenlik tabani: 70 C uzerinde fan en az %40.
+		if (hottest >= FAN_SAFETY_TEMP && target < FAN_SAFETY_MIN_PCT)
+			target = FAN_SAFETY_MIN_PCT;
 
 		if (target != last_target) {
 			uint8_t speed = fan_speed_from_pct(target);
@@ -1053,6 +1339,8 @@ static int helper_handle(char *line){
 	else if (strcmp(tok[0], "battery") == 0) rc = cmd_battery(n, tok);
 	else if (strcmp(tok[0], "kbd") == 0)     rc = cmd_kbd(n, tok);
 	else if (strcmp(tok[0], "power") == 0)   rc = cmd_power(n, tok);
+	else if (strcmp(tok[0], "display") == 0) rc = cmd_display(n, tok);
+	else if (strcmp(tok[0], "cpu") == 0)     rc = cmd_cpu(n, tok);
 	else if (strcmp(tok[0], "cleanup") == 0) rc = cmd_cleanup(n, tok);
 	else fprintf(stderr, "bilinmeyen komut: %s\n", tok[0]);
 	printf("RC %d\n", rc);
@@ -1143,6 +1431,12 @@ static void usage(void)
 		"  sudo monsterctl power status\n"
 		"  sudo monsterctl power stat        (anlik paket gucu)\n"
 		"  sudo monsterctl power pl1 <W> | pl2 <W> | <pl1> <pl2>\n"
+		"  sudo monsterctl power pl4 <W>\n"
+		"  sudo monsterctl display [status|brightness <1-100>]\n"
+		"  sudo monsterctl cpu status\n"
+		"  sudo monsterctl cpu governor <performance|powersave>\n"
+		"  sudo monsterctl cpu epp <default|performance|balance_performance|balance_power|power>\n"
+		"  sudo monsterctl cpu max <20-100> | cores <1-N>\n"
 		"  sudo monsterctl cleanup ram | journal [MB] | pkgcache | syscache\n",
 		"v1.0.0");
 }
@@ -1170,6 +1464,8 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "monitor") == 0) return cmd_monitor(argc - 1, argv + 1);
 	if (strcmp(argv[1], "kbd") == 0)     return cmd_kbd(argc - 1, argv + 1);
 	if (strcmp(argv[1], "power") == 0)   return cmd_power(argc - 1, argv + 1);
+	if (strcmp(argv[1], "display") == 0) return cmd_display(argc - 1, argv + 1);
+	if (strcmp(argv[1], "cpu") == 0)     return cmd_cpu(argc - 1, argv + 1);
 	if (strcmp(argv[1], "cleanup") == 0) return cmd_cleanup(argc - 1, argv + 1);
 	if (strcmp(argv[1], "helper") == 0)  return cmd_helper();
 	usage();
