@@ -7,7 +7,7 @@
 Fan eğrisi · klavye RGB · webcam · batarya limiti · CPU güç limitleri · GitHub güncellemeleri</p>
 
 <p align="center">
-  <img alt="sürüm" src="https://img.shields.io/badge/sürüm-1.1.0-4f8cff">
+  <img alt="sürüm" src="https://img.shields.io/badge/sürüm-1.1.1-4f8cff">
   <img alt="lisans" src="https://img.shields.io/badge/lisans-GPL--3.0--or--later-34d399">
   <img alt="platform" src="https://img.shields.io/badge/platform-Linux-4f8cff">
 </p>
@@ -38,7 +38,9 @@ yazılmış açık kaynak bir kontrol merkezidir. Gerçek donanım (EC/BIOS) üz
   güç kaynağı değiştiğinde uygun profil otomatik uygulanır. Ayrıca son yaptığınız
   fan, güç, parlaklık, CPU ve webcam ayarları kaydedilir; `monster-ctrl-profile`
   root servisi bunları **bilgisayar her açıldığında** siz değiştirene kadar
-  otomatik uygular. Bu, TCC’nin kalıcı profil davranışına karşılık gelir.
+  otomatik uygular. Servis `acpi_call` ve `uniwill-laptop` modüllerini de yükler;
+  fan RPM/görev telemetrisi paket kurulumundan sonra yeniden başlatma beklemeden
+  çalışır. Bu, TCC’nin kalıcı profil davranışına karşılık gelir.
 - **Sistem tepsisi:** Pencereyi kapatmak uygulamayı kapatmaz; arka planda
   çalışır. Tepsi menüsünden uygulamayı açmadan RAM/sistem temizleyebilir,
   klavye rengi ve animasyonu seçebilir, fan profili uygulayabilirsiniz.
@@ -84,7 +86,7 @@ systemd servisini (`monster-ctrl-profile.service`) kurar.
 ### Arch Linux / CachyOS (pacman)
 
 ```bash
-sudo pacman -U openmonster-1.1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U openmonster-1.1.1-1-x86_64.pkg.tar.zst
 openmonster
 ```
 
@@ -98,21 +100,21 @@ yay -S openmonster        # veya paru -S openmonster
 ### Debian / Ubuntu (.deb)
 
 ```bash
-sudo apt install ./openmonster_1.1.0-1_amd64.deb
+sudo apt install ./openmonster_1.1.1-1_amd64.deb
 openmonster
 ```
 
 Debian 12 ve Ubuntu 24.04 üzerinde test edildi. Eski `apt` sürümlerinde:
 
 ```bash
-sudo dpkg -i openmonster_1.1.0-1_amd64.deb
+sudo dpkg -i openmonster_1.1.1-1_amd64.deb
 sudo apt -f install
 ```
 
 ### Fedora / RPM tabanlı dağıtımlar (.rpm)
 
 ```bash
-sudo dnf install ./openmonster-1.1.0-1.fc41.x86_64.rpm
+sudo dnf install ./openmonster-1.1.1-1.fc41.x86_64.rpm
 openmonster
 ```
 
@@ -122,8 +124,8 @@ genellikle RPM Fusion'dan gelir; paket bunları yalnızca önerir, zorunlu tutma
 ### Diğer dağıtımlar (portable arşiv)
 
 ```bash
-tar -xzf openmonster-1.1.0-portable-x86_64.tar.gz
-cd openmonster-1.1.0-portable
+tar -xzf openmonster-1.1.1-portable-x86_64.tar.gz
+cd openmonster-1.1.1-portable
 sudo ./install.sh
 openmonster
 ```
@@ -205,8 +207,18 @@ Servis:
 - AC/pil değişimini 2 saniyede bir izler ve uygun profili seçer.
 - Fan eğrisini 3 saniyede bir sıcaklığa göre günceller (70 °C üstünde en az %40).
 - Webcam ayarlarını açılışta yeniden uygular.
+- `acpi_call` ve `uniwill-laptop` modüllerini yükler; böylece fan RPM/görev
+  değerleri yeniden başlatma beklemeden görünür.
 - GUI’den ayar değiştiğinde dosyayı otomatik yeniden yükler; yeniden başlatma
   gerekmez.
+
+Fan RPM değerleri hâlâ `–` görünüyorsa modülleri ve servisi kontrol edin:
+
+```bash
+sudo modprobe -a acpi_call uniwill-laptop
+sudo systemctl restart monster-ctrl-profile.service
+sensors | grep -A5 uniwill
+```
 
 Eski sabit eğri servisi `monster-ctrl-fanprofile.service` alternatif olarak
 korunmuştur. Yeni servis kurulumda etkinleştirilir ve eski servis devre dışı

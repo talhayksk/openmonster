@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           openmonster
-Version:        1.1.0
+Version:        1.1.1
 Release:        1%{?dist}
 Summary:        Monster/Uniwill laptop control center for Linux
 
@@ -52,6 +52,7 @@ install -Dm0644 etc/monster-ctrl-profile.service \
 systemctl daemon-reload >/dev/null 2>&1 || :
 systemctl disable --now monster-ctrl-fanprofile.service >/dev/null 2>&1 || :
 systemctl enable --now monster-ctrl-profile.service >/dev/null 2>&1 || :
+systemctl restart monster-ctrl-profile.service >/dev/null 2>&1 || :
 update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || :
 gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor >/dev/null 2>&1 || :
 
@@ -79,6 +80,12 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_unitdir}/monster-ctrl-profile.service
 
 %changelog
+* Sun Oct 25 2026 Talha Yuksek <talha.yuksek@hotmail.com> - 1.1.1-1
+- Load acpi_call and uniwill-laptop modules from the profile service.
+- Restart the profile service on package upgrade so fan RPM/duty works
+  immediately without a reboot.
+- Refresh README screenshots with working fan telemetry.
+
 * Sun Oct 25 2026 Talha Yuksek <talha.yuksek@hotmail.com> - 1.1.0-1
 - Webcam controls and persistent automatic profile daemon.
 - Settings are applied at boot and on AC/battery changes.

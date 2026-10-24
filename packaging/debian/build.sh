@@ -5,7 +5,7 @@ set -euo pipefail
 
 SRC="${SRC:-/src}"
 OUT="${OUT:-/out}"
-VERSION="${VERSION:-1.1.0}"
+VERSION="${VERSION:-1.1.1}"
 REL="${REL:-1}"
 ARCH="${ARCH:-amd64}"
 
@@ -88,6 +88,7 @@ if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl disable --now monster-ctrl-fanprofile.service >/dev/null 2>&1 || true
     systemctl enable --now monster-ctrl-profile.service >/dev/null 2>&1 || true
+    systemctl restart monster-ctrl-profile.service >/dev/null 2>&1 || true
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true

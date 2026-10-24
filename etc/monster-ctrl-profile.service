@@ -10,6 +10,9 @@ Requires=systemd-modules-load.service
 
 [Service]
 Type=simple
+# Fan RPM/duty icin uniwill-laptop hwmon'u, EC erisimi icin acpi_call'i yukle.
+# Modul yoksa servis yine calisir (CPU/ekran/webcam ayarlari uygulanir).
+ExecStartPre=/bin/sh -c 'modprobe -a acpi_call uniwill-laptop 2>/dev/null || true'
 # acpi_call hazir olana kadar kisa sure bekle; yoksa CPU/ekran ayarlari yine uygulanir.
 ExecStartPre=/bin/sh -c 'i=0; while [ ! -e /proc/acpi/call ] && [ $i -lt 30 ]; do i=$((i+1)); sleep 1; done; exit 0'
 ExecStart=/usr/bin/monsterctl autoprofile --interval 3

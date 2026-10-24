@@ -5,7 +5,7 @@ set -euo pipefail
 
 SRC="${SRC:-/src}"
 OUT="${OUT:-/out}"
-VERSION="${VERSION:-1.1.0}"
+VERSION="${VERSION:-1.1.1}"
 
 BUILD=/tmp/openmonster-portable
 rm -rf "$BUILD"

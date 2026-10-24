@@ -20,6 +20,7 @@ service: install
 	systemctl daemon-reload
 	-systemctl disable --now monster-ctrl-fanprofile.service
 	systemctl enable --now monster-ctrl-profile.service
+	systemctl restart monster-ctrl-profile.service
 	@echo "Otomatik profil servisi aktif: systemctl status monster-ctrl-profile"
 
 install: $(TARGET)

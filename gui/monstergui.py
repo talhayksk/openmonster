@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# OpenMonster GUI v1.1.0 (PyQt6): modern koyu tema + ring gostergeli panel
+# OpenMonster GUI v1.1.1 (PyQt6): modern koyu tema + ring gostergeli panel
 # - Acilista BIR KEZ pkexec sifre penceresi; sonraki komutlar sifresiz (monsterctl helper)
 # - Root islemleri proje icindeki guncel binary ile yapilir.
 # - Sistem tepsisi: arka planda temizlik / fan / RGB hizli islemleri.
@@ -49,7 +49,7 @@ except ImportError:
 
 APP_NAME = "OpenMonster"
 APP_ID = "openmonster"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 GITHUB_REPO = "talhayksk/openmonster"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
@@ -2146,6 +2146,11 @@ class Main(QMainWindow):
         if idx != 2:
             self._webcam_stop_preview()
         self.stack.setCurrentIndex(idx)
+        # Programatik gezinmede de menü seçimini senkron tut.
+        if hasattr(self, "nav_group"):
+            btn = self.nav_group.button(idx)
+            if btn is not None and not btn.isChecked():
+                btn.setChecked(True)
         self.page_title.setText(
             ["Izleme", "Kontroller", "Sistem", "Temizlik", "Güncelleme",
              "Çıktı"][idx])
@@ -4289,6 +4294,8 @@ class Main(QMainWindow):
             if c is not None:
                 self._last_cpu_temp = c
                 self.g_cpu.set(c, f"{c:.0f}", temp_color(c))
+            self.g_fan1.set(0, "–", C_MUTED, "uniwill modülü yok")
+            self.g_fan2.set(0, "–", C_MUTED, "uniwill modülü yok")
             return
         t1 = rread(os.path.join(hw, "temp1_input"))
         t2 = rread(os.path.join(hw, "temp2_input"))
