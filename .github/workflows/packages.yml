@@ -24,6 +24,20 @@ jobs:
       - name: Build portable tarball
         run: ./scripts/build-portable.sh
 
+      - name: Build Arch package
+        run: |
+          docker run --rm \
+            -v "$PWD":/src:ro \
+            -v "$PWD/dist":/out \
+            archlinux:latest bash -c '
+              set -e
+              pacman -Syu --noconfirm --needed base-devel >/dev/null
+              useradd -m builder
+              cp -a /src /home/builder/src
+              chown -R builder /home/builder/src /out
+              su builder -c "cd /home/builder/src && OUT=/out ./scripts/build-package.sh"
+            '
+
       - name: Checksums
         run: |
           cd dist
@@ -31,6 +45,7 @@ jobs:
             openmonster_*.deb \
             openmonster-*.rpm \
             openmonster-*portable*.tar.gz \
+            openmonster-*.pkg.tar.zst \
             > SHA256SUMS-linux
 
       - name: Upload workflow artifacts
@@ -41,6 +56,7 @@ jobs:
             dist/*.deb
             dist/*.rpm
             dist/*portable*.tar.gz
+            dist/*.pkg.tar.zst
             dist/SHA256SUMS-linux
 
       - name: Attach packages to release
@@ -51,4 +67,5 @@ jobs:
             dist/*.deb
             dist/*.rpm
             dist/*portable*.tar.gz
+            dist/*.pkg.tar.zst
             dist/SHA256SUMS-linux

@@ -4,6 +4,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT="${OUT:-$ROOT/dist}"
 cd "$ROOT"
 
 VERSION="$(sed -n 's/^pkgver=//p' packaging/PKGBUILD)"
@@ -36,16 +37,16 @@ cp packaging/PKGBUILD packaging/openmonster.install "$WORK/"
 echo "==> makepkg"
 ( cd "$WORK" && makepkg -f --nodeps --noconfirm )
 
-mkdir -p "$ROOT/dist"
+mkdir -p "$OUT"
 PKG="$(find "$WORK" -maxdepth 1 -name '*.pkg.tar.zst' -print -quit)"
 if [ -z "$PKG" ]; then
     echo "HATA: paket uretilmedi" >&2
     exit 1
 fi
-cp "$PKG" "$ROOT/dist/"
+cp "$PKG" "$OUT/"
 BASE="$(basename "$PKG")"
-( cd "$ROOT/dist" && sha256sum "$BASE" > "$BASE.sha256" )
+( cd "$OUT" && sha256sum "$BASE" > "$BASE.sha256" )
 
 echo
-echo "Hazir: dist/$BASE"
-echo "Kurulum: sudo pacman -U dist/$BASE"
+echo "Hazir: $OUT/$BASE"
+echo "Kurulum: sudo pacman -U $OUT/$BASE"
