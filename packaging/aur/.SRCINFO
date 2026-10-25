@@ -17,6 +17,6 @@ pkgbase = openmonster
 	backup = etc/modprobe.d/monster-ctrl.conf
 	backup = etc/modules-load.d/monster-ctrl.load
 	source = openmonster-1.1.2.tar.gz::https://github.com/talhayksk/openmonster/archive/refs/tags/v1.1.2.tar.gz
-	sha256sums = 259b48852bee7cf7ca79c0e755634e881a39b37a9c9d8b57e3717f8dd011a2fb
+	sha256sums = 2a4e5722c0d65f2d9a1cd674a3c01c3fe8ef17d3a26644e266834d8c80ba3269
 
 pkgname = openmonster
