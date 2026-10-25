@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           openmonster
-Version:        1.1.1
+Version:        1.1.2
 Release:        1%{?dist}
 Summary:        Monster/Uniwill laptop control center for Linux
 
@@ -80,6 +80,11 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_unitdir}/monster-ctrl-profile.service
 
 %changelog
+* Sun Oct 25 2026 Talha Yuksek <talha.yuksek@hotmail.com> - 1.1.2-1
+- Make the update page state explicit: current/latest, update available,
+  and package-not-ready states now show a clear button label.
+- Keep the install button enabled whenever a matching release asset exists.
+
 * Sun Oct 25 2026 Talha Yuksek <talha.yuksek@hotmail.com> - 1.1.1-1
 - Load acpi_call and uniwill-laptop modules from the profile service.
 - Restart the profile service on package upgrade so fan RPM/duty works

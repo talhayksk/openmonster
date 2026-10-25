@@ -5,7 +5,7 @@ set -euo pipefail
 
 SRC="${SRC:-/src}"
 OUT="${OUT:-/out}"
-VERSION="${VERSION:-1.1.1}"
+VERSION="${VERSION:-1.1.2}"
 DIST="${DIST:-.fc41}"
 
 BUILD=/tmp/openmonster-rpm

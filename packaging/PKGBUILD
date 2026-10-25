@@ -1,6 +1,6 @@
 # Maintainer: Talha Yuksek <talha.yuksek@hotmail.com>
 pkgname=openmonster
-pkgver=1.1.1
+pkgver=1.1.2
 pkgrel=1
 pkgdesc="Monster/Uniwill laptop control center: fan curves, RGB, battery, power limits"
 arch=('x86_64')

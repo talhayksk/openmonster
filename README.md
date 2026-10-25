@@ -7,7 +7,7 @@
 Fan eğrisi · klavye RGB · webcam · batarya limiti · CPU güç limitleri · GitHub güncellemeleri</p>
 
 <p align="center">
-  <img alt="sürüm" src="https://img.shields.io/badge/sürüm-1.1.1-4f8cff">
+  <img alt="sürüm" src="https://img.shields.io/badge/sürüm-1.1.2-4f8cff">
   <img alt="lisans" src="https://img.shields.io/badge/lisans-GPL--3.0--or--later-34d399">
   <img alt="platform" src="https://img.shields.io/badge/platform-Linux-4f8cff">
 </p>
@@ -86,7 +86,7 @@ systemd servisini (`monster-ctrl-profile.service`) kurar.
 ### Arch Linux / CachyOS (pacman)
 
 ```bash
-sudo pacman -U openmonster-1.1.1-1-x86_64.pkg.tar.zst
+sudo pacman -U openmonster-1.1.2-1-x86_64.pkg.tar.zst
 openmonster
 ```
 
@@ -100,21 +100,21 @@ yay -S openmonster        # veya paru -S openmonster
 ### Debian / Ubuntu (.deb)
 
 ```bash
-sudo apt install ./openmonster_1.1.1-1_amd64.deb
+sudo apt install ./openmonster_1.1.2-1_amd64.deb
 openmonster
 ```
 
 Debian 12 ve Ubuntu 24.04 üzerinde test edildi. Eski `apt` sürümlerinde:
 
 ```bash
-sudo dpkg -i openmonster_1.1.1-1_amd64.deb
+sudo dpkg -i openmonster_1.1.2-1_amd64.deb
 sudo apt -f install
 ```
 
 ### Fedora / RPM tabanlı dağıtımlar (.rpm)
 
 ```bash
-sudo dnf install ./openmonster-1.1.1-1.fc41.x86_64.rpm
+sudo dnf install ./openmonster-1.1.2-1.fc41.x86_64.rpm
 openmonster
 ```
 
@@ -124,8 +124,8 @@ genellikle RPM Fusion'dan gelir; paket bunları yalnızca önerir, zorunlu tutma
 ### Diğer dağıtımlar (portable arşiv)
 
 ```bash
-tar -xzf openmonster-1.1.1-portable-x86_64.tar.gz
-cd openmonster-1.1.1-portable
+tar -xzf openmonster-1.1.2-portable-x86_64.tar.gz
+cd openmonster-1.1.2-portable
 sudo ./install.sh
 openmonster
 ```

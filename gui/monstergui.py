@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# OpenMonster GUI v1.1.1 (PyQt6): modern koyu tema + ring gostergeli panel
+# OpenMonster GUI v1.1.2 (PyQt6): modern koyu tema + ring gostergeli panel
 # - Acilista BIR KEZ pkexec sifre penceresi; sonraki komutlar sifresiz (monsterctl helper)
 # - Root islemleri proje icindeki guncel binary ile yapilir.
 # - Sistem tepsisi: arka planda temizlik / fan / RGB hizli islemleri.
@@ -49,7 +49,7 @@ except ImportError:
 
 APP_NAME = "OpenMonster"
 APP_ID = "openmonster"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 GITHUB_REPO = "talhayksk/openmonster"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
@@ -3349,7 +3349,7 @@ class Main(QMainWindow):
         cl.addWidget(self.upd_detail)
 
         actions = QHBoxLayout()
-        self.upd_install_btn = QPushButton("İndir ve kur")
+        self.upd_install_btn = QPushButton("Güncellemeyi indir ve kur")
         self.upd_install_btn.setObjectName("primary")
         self.upd_install_btn.setIcon(nav_icon("update", "#ffffff"))
         self.upd_install_btn.setIconSize(QSize(16, 16))
@@ -3439,6 +3439,8 @@ class Main(QMainWindow):
         self._update_checked = True
         self.upd_check_btn.setDisabled(True)
         self.upd_install_btn.setDisabled(True)
+        self.upd_install_btn.setText("Kontrol ediliyor…")
+        self.upd_install_btn.setToolTip("Güncelleme kontrolü sürüyor")
         self.upd_status.setText("GitHub sürümleri kontrol ediliyor…")
         self.upd_detail.hide()
         self.upd_progress.hide()
@@ -3462,6 +3464,8 @@ class Main(QMainWindow):
             self.upd_detail.setText("İnternet bağlantınızı ve GitHub erişimini "
                                     "kontrol edin.")
             self.upd_detail.show()
+            self.upd_install_btn.setText("Güncellemeyi indir ve kur")
+            self.upd_install_btn.setDisabled(True)
             self._set_update_badge("HATA", "muted")
             self.log(f"Güncelleme kontrolü başarısız: {error_text}")
             if not silent:
@@ -3476,6 +3480,8 @@ class Main(QMainWindow):
             self.upd_status.setText("GitHub yanıtı okunamadı.")
             self.upd_detail.setText(str(exc))
             self.upd_detail.show()
+            self.upd_install_btn.setText("Güncellemeyi indir ve kur")
+            self.upd_install_btn.setDisabled(True)
             self._set_update_badge("HATA", "muted")
             self.log(f"Güncelleme yanıtı okunamadı: {exc}")
             return
@@ -3489,6 +3495,8 @@ class Main(QMainWindow):
             self.upd_status.setText("Sürüm bilgisi okunamadı.")
             self.upd_detail.setText(f"GitHub etiketi: {tag or '—'}")
             self.upd_detail.show()
+            self.upd_install_btn.setText("Güncellemeyi indir ve kur")
+            self.upd_install_btn.setDisabled(True)
             self._set_update_badge("HATA", "muted")
             return
 
@@ -3509,7 +3517,11 @@ class Main(QMainWindow):
             self.upd_status.setText(
                 f"En güncel sürümü kullanıyorsunuz (v{APP_VERSION}).")
             self.upd_info.setText(
-                f"Kurulu sürüm: v{APP_VERSION}  ·  GitHub: {tag}")
+                f"Kurulu sürüm: v{APP_VERSION}  ·  GitHub: {tag}"
+                "  ·  İndirilecek güncelleme yok.")
+            self.upd_install_btn.setText("Güncel — indirilecek sürüm yok")
+            self.upd_install_btn.setToolTip(
+                "Kurulu sürüm GitHub'daki en son sürümle aynı.")
             self.upd_install_btn.setDisabled(True)
             self._mark_update(False, tag)
             if not silent:
@@ -3522,16 +3534,28 @@ class Main(QMainWindow):
             self.upd_info.setText(
                 f"Yeni sürüm: {tag}  ·  paket: {self._update_asset.get('name')}"
                 f"  ·  {size}")
+            self.upd_install_btn.setText("Güncellemeyi indir ve kur")
+            self.upd_install_btn.setToolTip(
+                f"v{tag} paketini indir, SHA-256 ile doğrula ve kur.")
             self.upd_install_btn.setEnabled(True)
             self.upd_status.setText(
                 f"Yeni sürüm {tag} hazır. İndirip kurabilirsiniz.")
         else:
+            self._update_available = False
             self.upd_info.setText(
                 f"Yeni sürüm: {tag}  ·  Bu dağıtım için uygun paket bulunamadı.")
             self.upd_status.setText(
-                "GitHub sürümünde bu sistem için paket yok; bağlantıdan "
-                "portable arşivi elle indirebilirsiniz.")
+                f"v{tag} yayınlandı ancak paket henüz yüklenmemiş olabilir. "
+                "Birkaç dakika sonra tekrar kontrol edin.")
+            self.upd_install_btn.setText("Paket henüz hazır değil")
+            self.upd_install_btn.setToolTip(
+                "Release paketleri yüklendikten sonra tekrar kontrol edin.")
             self.upd_install_btn.setDisabled(True)
+            self._mark_update(False, "")
+            self._set_update_badge("PAKET BEKLENİYOR", "muted")
+            if not silent:
+                self.toast("Güncelleme paketi henüz yayında değil", ok=False)
+            return
         self._mark_update(True, tag)
         msg = f"Yeni sürüm {tag} mevcut"
         if silent:
@@ -3771,8 +3795,11 @@ class Main(QMainWindow):
     def _update_fail(self, message):
         self._update_busy = False
         self.upd_check_btn.setEnabled(True)
-        self.upd_install_btn.setEnabled(bool(self._update_available
-                                             and self._update_asset))
+        can_retry = bool(self._update_available and self._update_asset)
+        self.upd_install_btn.setText(
+            "Güncellemeyi yeniden dene" if can_retry
+            else "Güncellemeyi indir ve kur")
+        self.upd_install_btn.setEnabled(can_retry)
         self.upd_install_btn.show()
         self.upd_restart_btn.hide()
         self.upd_progress.hide()

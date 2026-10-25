@@ -1,6 +1,6 @@
 pkgbase = openmonster
 	pkgdesc = Monster/Uniwill laptop control center for Linux: fan, RGB, battery and power limits
-	pkgver = 1.1.1
+	pkgver = 1.1.2
 	pkgrel = 1
 	url = https://github.com/talhayksk/openmonster
 	install = openmonster.install
@@ -16,7 +16,7 @@ pkgbase = openmonster
 	optdepends = pacman-contrib: paket onbellegi temizligi (paccache)
 	backup = etc/modprobe.d/monster-ctrl.conf
 	backup = etc/modules-load.d/monster-ctrl.load
-	source = openmonster-1.1.1.tar.gz::https://github.com/talhayksk/openmonster/archive/refs/tags/v1.1.1.tar.gz
+	source = openmonster-1.1.2.tar.gz::https://github.com/talhayksk/openmonster/archive/refs/tags/v1.1.2.tar.gz
 	sha256sums = 259b48852bee7cf7ca79c0e755634e881a39b37a9c9d8b57e3717f8dd011a2fb
 
 pkgname = openmonster

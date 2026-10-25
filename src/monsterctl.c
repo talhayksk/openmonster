@@ -2138,7 +2138,7 @@ static void usage(void)
 		"  sudo monsterctl autoprofile [--interval <sn>] [--check] [--once]\n"
 		"  sudo monsterctl sysconfig <base64|dosya>   (GUI tarafindan kullanilir)\n"
 		"  sudo monsterctl cleanup ram | journal [MB] | pkgcache | syscache\n",
-		"v1.1.1");
+		"v1.1.2");
 }
 
 int main(int argc, char **argv)
